@@ -6,5 +6,7 @@ dist/
 .venv/
 venv/
 envs/
+buildenv/
 debug_*.py
+diag_*.py
 uwf_check.log
