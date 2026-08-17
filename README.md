@@ -1,70 +1,103 @@
-# UWF Manager Pro
+# Win10 自带还原 UWF · UWF Manager Pro
+# Win10 Built-in Restore UWF · UWF Manager Pro
 
-一个轻量、开源的 Windows Unified Write Filter (UWF) 管理工具。
+> 🤖 **本项目由用户（duoduo）与 AI 协作开发**，目前为**初步版本（Preliminary）**，功能会持续迭代更新。
+> This project is **co-developed by a user (duoduo) and an AI assistant**. It is currently a **preliminary version** and will be improved over time.
 
-> 原生 Python + tkinter 实现，无需 .NET / Qt 运行时，单文件 exe 即可运行。
+[English version below / 中文说明在上]
 
-## 功能
+---
 
-- **UWF 状态面板**：实时显示 UWF 已启用/禁用状态、关机待处理、HORM 状态。
-- **覆盖层内存监控**：可视化显示覆盖层已用 / 总容量，进度条根据
-  警告 / 临界阈值自动变色（蓝 → 橙 → 红）。
-- **受保护卷列表**：列出每个卷的保护状态、会话信息。
-- **文件浏览器**：扫描受保护卷上最近修改的大文件，帮你定位
-  「覆盖层的内存都被哪些文件吃掉了」，原始路径一目了然。
-- **覆盖层文件日志（内存文件清单）**：一键列出自「本次开机」以来被写入 /
-  修改、实际暂存在 UWF 覆盖层（内存）中的文件——这些文件**原始位置都在
-  受保护的 C: 盘，现在却占用内存**，重启会丢失（除非先「提交」）。
-  显示文件总数、合计大小、每条的原始路径 / 大小 / 类型 / 状态，并支持
-  **导出为 TXT** 自行核对与清理。
-- **操作**：启用 / 禁用 UWF、提交所有删除、刷新、设置覆盖上限。
+## 简介 / Introduction
 
-## 为什么不用原版 UWF.1.0.17.exe？
+Windows 10/11 企业版、教育版、IoT 企业版自带 **UWF（Unified Write Filter，统一写入筛选器）**。它会把对所有受保护卷（通常是 C 盘）的“写入”重定向到一个**覆盖层（Overlay）**——可以是内存，也可以是磁盘。重启后覆盖层被丢弃，系统**一键还原**到原始状态，相当于系统自带的“影子系统 / 还原模式”。
 
-原版存在两个已知问题：
-1. 读取 `UWF_Volume` 时强制对所有卷（含未保护卷）要求布尔类型，在部分
-   环境下会抛出
-   `UWF 状态不可用：decode WMI row, field 'Protected' has the wrong type` 而崩溃。
-2. 读取了不存在的字段 `UWF_Overlay.UsedSpace`（恒为 NULL），导致状态面板
-   无法正常显示。
+Windows 10/11 **Enterprise / Education / IoT Enterprise** editions ship with **UWF (Unified Write Filter)**. It redirects every write to a protected volume (usually `C:`) into an **overlay** (in memory or on disk). After a reboot the overlay is discarded and the system is **restored** to its original state — essentially a built-in “shadow / stealth mode” for Windows.
 
-本工具使用容错解析，字段名完全对齐微软官方 WMI 定义，并对所有 COM 访问
-做了**跨线程隔离（每个后台线程独立 `CoInitialize` + 独立连接）**，彻底
-避免了「打开后一直卡在检测中」的问题。
+但微软只提供了命令行 `uwfmgr.exe`，**没有图形界面**。本工具就是 UWF 的**图形化管理器**，让你像用普通软件一样查看、配置、监控 UWF。
 
-## 系统要求
+Microsoft only ships the `uwfmgr.exe` command line — **no GUI**. This tool is a **graphical manager for UWF**, so you can view, configure, and monitor UWF like a normal desktop app.
 
-- Windows 10/11 企业版 / 教育版 / IoT（支持 UWF 的系统）
-- **必须以管理员身份运行**（UWF WMI 接口需要管理员权限）
-- 无需安装任何运行时
+---
 
-## 使用
+## ✨ 功能特性 / Features
 
-1. 右键 `UWF Manager Pro.exe` → 以管理员身份运行
-2. 查看状态面板与覆盖内存使用情况
-3. 切换到「文件浏览器」扫描最近修改的大文件，定位内存占用来源
-4. 如需释放覆盖层，可「提交所有删除」或重启计算机
+- 📊 **状态面板 / Status dashboard** — UWF 启用状态、覆盖层已用/剩余内存、阈值进度条（接近上限自动变红）。
+- 💾 **文件浏览器 / File explorer** — 找出哪些文件、目录正在“吃掉”你的覆盖层内存。
+- 📝 **实时写入监控 / Real-time write monitor** — 开启后持续监听系统盘写入，实时滚动显示“有哪些文件刚写进了内存”，可导出 TXT。
+- ⚙️ **设置面板 / Settings** — 最大缓存、警告/严重阈值、写入过滤、覆盖类型、HORM、排除列表（UWF 启用时控件自动只读，避免无效修改）。
+- 🚫 **排除列表 / Exclusions** — 查看与管理系统受保护卷的排除项（文件 / 注册表），直接写入真实磁盘。
+- 🔧 **操作 / Actions** — 启用 / 禁用 UWF、提交删除（穿透覆盖层写入真实磁盘）、重启。
+- 🔍 **托盘常驻 / System tray** — 最小化到托盘，后台持续运行与监控。
 
-## 构建
+---
+
+## 📋 系统要求 / Requirements
+
+- Windows 10 / 11 **企业版 / 教育版 / IoT 企业版**（需支持 UWF 功能）。
+- 必须以**管理员身份**运行。
+- UWF 依赖特定过滤驱动，通常与 Hyper-V 等存在共存限制，请确认环境支持。
+- **English**: Windows 10/11 **Enterprise / Education / IoT Enterprise** with the UWF feature enabled; must be run **as Administrator**.
+
+---
+
+## 🚀 快速使用 / Quick Start
+
+1. 前往 [Releases](../../releases) 下载 `UWF Manager Pro.exe`。
+2. **右键 → 以管理员身份运行**。
+3. 首次打开会自动检测 UWF 状态并加载数据。
+
+---
+
+## 🛠️ 从源码构建 / Build from Source
 
 ```bash
-pip install pyinstaller
-pyinstaller --onefile --windowed --name "UWF Manager Pro" main.py
+pip install -r requirements.txt
+
+pyinstaller --onefile --windowed --name "UWF Manager Pro" ^
+  --add-data "uwf_core.py;." ^
+  --add-data "file_scan.py;." ^
+  --add-data "overlay_monitor.py;." ^
+  main.py
 ```
 
-产物位于 `dist/UWF Manager Pro.exe`。
+生成的单文件 exe 位于 `dist/UWF Manager Pro.exe`。
 
-## 技术说明
+> 说明：WMI 的 `GetOverlayFiles` 在部分环境枚举量过大时会挂起，故实时监控改用 `ReadDirectoryChangesW` 文件系统监听（UWF 下所有系统盘写入都落在覆盖层，等价于监控“写进了内存的文件”）。
 
-通过 `win32com` 访问 WMI 命名空间 `root\standardcimv2\embedded`：
+---
 
-| WMI 类 | 用途 |
-|--------|------|
-| `UWF_Filter` | 启用 / 禁用状态、HORM、关机待处理 |
-| `UWF_Volume` | 各卷保护状态、提交待定 |
-| `UWF_Overlay` | 覆盖层已用 / 可用 / 阈值 |
-| `UWF_OverlayConfig` | 覆盖层类型与最大容量 |
+## 📖 UWF 小知识 / About UWF
 
-## License
+覆盖层有大小上限（默认或自定义）。一旦写入超出上限，系统可能蓝屏或强制重启。本工具帮你**盯着这条水位线**，并告诉你“内存被哪些文件吃掉了”。
 
-MIT
+The overlay has a size limit. Exceeding it can crash or force-reboot the system. This tool helps you **watch that water level** and shows you **which files are eating your overlay memory**.
+
+---
+
+## 🤝 关于本项目 / About This Project
+
+- 🤖 **AI 与用户协作 / Built with AI** — 软件由用户 **duoduo** 提出需求、亲自测试与反馈，并与 AI 助手共同完成编码、调试与打包。
+- 🐣 **初步版本 / Preliminary** — 当前为早期版本，核心功能已可用，后续会持续迭代：更多设置项、更友好的提示、可能的国际化等。
+- 💡 仓库公开后，欢迎提交 Issue 与 Pull Request。
+
+---
+
+## ⚠️ 免责声明 / Disclaimer
+
+本软件按“原样”提供，作者不对使用造成的任何系统问题负责。修改 UWF 配置、提交删除等操作会真实改变系统状态，请谨慎使用。
+
+Provided “as is”, without warranty of any kind. Changing UWF settings or committing deletions **does** affect the real system state — use with care.
+
+---
+
+## 📄 许可证 / License
+
+[MIT](LICENSE) — Copyright © 2026 duoduo & AI collaborators.
+
+---
+
+## 🙏 鸣谢 / Credits
+
+- 用户 **duoduo**：需求定义、测试验证、反馈迭代。
+- AI 助手：架构设计、编码实现、调试与打包。

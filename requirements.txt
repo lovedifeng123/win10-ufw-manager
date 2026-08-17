@@ -1,0 +1,4 @@
+# UWF Manager Pro - Python dependencies
+# tkinter ships with the official Windows Python installer (no pip package needed)
+pywin32>=306
+PyInstaller>=6.0

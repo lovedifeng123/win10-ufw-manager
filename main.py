@@ -24,6 +24,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, simpledialog
 import uwf_core
 import file_scan
+import overlay_monitor
 import ctypes
 
 # ==================== 常量与主题 ====================
@@ -123,10 +124,17 @@ class UWFApp:
         self.log_gen = 0
         self.settings_gen = 0
         self._rendered = False
+        # 实时写入监控状态
+        self.monitor = overlay_monitor.OverlayMonitor()
+        self.monitoring = False
+        self.log_map = {}          # path -> treeview row id（去重）
+        self.log_records = []      # (ts, path, action, size_bytes) 用于导出
+        self.log_event_count = 0   # 本次会话捕获的写入事件总数
+        self.MAX_LOG_ROWS = 4000   # 列表最多显示的不同文件数
+        self.EXPORT_CAP = 20000    # 导出记录上限
         self.tray = SystemTrayIcon(self)
         self._setup_ui()
         self.refresh()
-        self.generate_log(auto=True)
 
     # ---------- 管理员检测 ----------
     def _check_admin(self):
@@ -293,34 +301,34 @@ class UWFApp:
                    command=lambda: self.on_unprotect_volume("C:")).pack(
             side=tk.LEFT, padx=2)
 
-        # --- 覆盖层文件日志 ---
-        inner = self._card(content, "覆盖层文件日志（内存中的文件）")
+        # --- 覆盖层写入监控（实时） ---
+        inner = self._card(content, "覆盖层写入监控（实时）")
         tk.Label(inner,
-                 text="自「本次开机」以来写入覆盖层的文件。重启将丢失。",
+                 text="开启后实时捕获写入 C: 覆盖层的文件（新增/修改）。"
+                      "UWF 启用时所有写入都进覆盖层，故监控真实文件系统即等价。",
                  font=FONT, fg=TEXT_SUB, bg=CARD_BG).pack(anchor="w")
         opt = tk.Frame(inner, bg=CARD_BG)
         opt.pack(fill=tk.X, pady=(6, 2))
-        tk.Label(opt, text="最小 MB:", bg=CARD_BG, font=FONT).pack(side=tk.LEFT)
-        self.var_log_min = tk.StringVar(value="1")
-        ttk.Entry(opt, textvariable=self.var_log_min, width=5).pack(
-            side=tk.LEFT, padx=4)
-        ttk.Button(opt, text="生成日志", width=10,
-                   command=lambda: self.generate_log(auto=False)).pack(
-            side=tk.LEFT, padx=6)
+        self.btn_log_toggle = ttk.Button(opt, text="开启记录", width=12,
+                                         command=self.on_log_toggle)
+        self.btn_log_toggle.pack(side=tk.LEFT, padx=2)
+        ttk.Button(opt, text="清空", width=8,
+                   command=self.on_clear_log).pack(side=tk.LEFT, padx=2)
         ttk.Button(opt, text="导出 TXT", width=10,
-                   command=self.on_export_log).pack(side=tk.LEFT, padx=3)
-        self.lbl_log = tk.Label(opt, text="", bg=CARD_BG, fg=TEXT_SUB, font=FONT)
+                   command=self.on_export_log).pack(side=tk.LEFT, padx=2)
+        self.lbl_log = tk.Label(opt, text="未开启", bg=CARD_BG, fg=TEXT_SUB,
+                                font=FONT)
         self.lbl_log.pack(side=tk.LEFT, padx=8)
 
-        log_cols = ("状态", "原始路径", "大小", "类型")
+        log_cols = ("时间", "原始路径", "大小", "操作")
         self.tree_log = ttk.Treeview(inner, columns=log_cols,
-                                     show="headings", height=8)
+                                     show="headings", height=10)
         for c in log_cols:
             self.tree_log.heading(c, text=c)
-        self.tree_log.column("状态", width=95)
-        self.tree_log.column("原始路径", width=480)
+        self.tree_log.column("时间", width=80)
+        self.tree_log.column("原始路径", width=470)
         self.tree_log.column("大小", width=85)
-        self.tree_log.column("类型", width=55)
+        self.tree_log.column("操作", width=70)
         self.tree_log.pack(fill=tk.X, pady=4)
         self.tree_log.bind("<Double-1>", self.on_open_log_file)
         self.log_menu = tk.Menu(self.root, tearoff=0)
@@ -330,8 +338,8 @@ class UWFApp:
                                   command=self.on_commit_log_delete)
         self.tree_log.bind("<Button-3>", self.on_log_rightclick)
 
-        self.lbl_log_summary = tk.Label(inner, text="", font=FONT_BOLD,
-                                        fg=ACCENT, bg=CARD_BG)
+        self.lbl_log_summary = tk.Label(inner, text="尚未开始记录",
+                                        font=FONT_BOLD, fg=ACCENT, bg=CARD_BG)
         self.lbl_log_summary.pack(anchor="w", pady=(4, 0))
 
     # ==================== Tab 2: 设置面板 ====================
@@ -361,36 +369,37 @@ class UWFApp:
         tk.Label(grid, text="写入过滤:", bg=CARD_BG, font=FONT).grid(
             row=r, column=0, sticky="e", padx=4, pady=5)
         self.var_filter = tk.StringVar(value="—")
-        cb_filter = ttk.Combobox(grid, textvariable=self.var_filter,
-                                 values=["启用", "禁用"], state="readonly",
-                                 width=14)
-        cb_filter.grid(row=r, column=1, sticky="w", padx=4, pady=5)
+        self.cb_filter = ttk.Combobox(grid, textvariable=self.var_filter,
+                                      values=["启用", "禁用"], state="readonly",
+                                      width=14)
+        self.cb_filter.grid(row=r, column=1, sticky="w", padx=4, pady=5)
         r += 1
 
         # 覆盖类型
         tk.Label(grid, text="覆盖类型:", bg=CARD_BG, font=FONT).grid(
             row=r, column=0, sticky="e", padx=4, pady=5)
         self.var_ovl_type = tk.StringVar(value="—")
-        cb_type = ttk.Combobox(grid, textvariable=self.var_ovl_type,
-                               values=["基于内存", "基于磁盘"],
-                               state="readonly", width=14)
-        cb_type.grid(row=r, column=1, sticky="w", padx=4, pady=5)
+        self.cb_type = ttk.Combobox(grid, textvariable=self.var_ovl_type,
+                                    values=["基于内存", "基于磁盘"],
+                                    state="readonly", width=14)
+        self.cb_type.grid(row=r, column=1, sticky="w", padx=4, pady=5)
         r += 1
 
         # HORM
         tk.Label(grid, text="HORM:", bg=CARD_BG, font=FONT).grid(
             row=r, column=0, sticky="e", padx=4, pady=5)
         self.var_horm = tk.StringVar(value="—")
-        cb_horm = ttk.Combobox(grid, textvariable=self.var_horm,
-                               values=["启用", "禁用"], state="readonly",
-                               width=14)
-        cb_horm.grid(row=r, column=1, sticky="w", padx=4, pady=5)
+        self.cb_horm = ttk.Combobox(grid, textvariable=self.var_horm,
+                                    values=["启用", "禁用"], state="readonly",
+                                    width=14)
+        self.cb_horm.grid(row=r, column=1, sticky="w", padx=4, pady=5)
         r += 1
 
         btn_row = tk.Frame(inner, bg=CARD_BG)
         btn_row.pack(fill=tk.X, pady=(8, 0))
-        ttk.Button(btn_row, text="应用基本设置", width=16,
-                   command=self.on_apply_basic).pack(side=tk.LEFT, padx=2)
+        self.btn_apply_basic = ttk.Button(btn_row, text="应用基本设置", width=16,
+                                          command=self.on_apply_basic)
+        self.btn_apply_basic.pack(side=tk.LEFT, padx=2)
 
         # --- 缓存设置(MB) ---
         inner = self._card(left_col, "缓存设置 (MB)")
@@ -423,8 +432,9 @@ class UWFApp:
 
         btn_row = tk.Frame(inner, bg=CARD_BG)
         btn_row.pack(fill=tk.X, pady=(8, 0))
-        ttk.Button(btn_row, text="确认缓存", width=14,
-                   command=self.on_apply_cache).pack(side=tk.LEFT, padx=2)
+        self.btn_apply_cache = ttk.Button(btn_row, text="确认缓存", width=14,
+                                          command=self.on_apply_cache)
+        self.btn_apply_cache.pack(side=tk.LEFT, padx=2)
 
         # ===== 右侧：分区保护设置 =====
         right_col = tk.Frame(content, bg=BG)
@@ -705,7 +715,7 @@ class UWFApp:
                 dl, prot, cons_s, sess_s, cp_s))
 
         # --- 更新设置面板 ---
-        self._update_settings_panel(flt, cfg)
+        self._update_settings_panel(flt, cfg, overlay)
         # --- 更新保护表格 ---
         self._update_protect_table(vols)
         # --- 刷新排除列表 ---
@@ -715,8 +725,10 @@ class UWFApp:
             text=f"最后刷新: {time.strftime('%H:%M:%S')}  |  "
                  f"root\\standardcimv2\\embedded ✓")
 
-    def _update_settings_panel(self, flt, cfg):
+    def _update_settings_panel(self, flt, cfg, overlay=None):
         """将数据填入设置面板控件。"""
+        # 记录当前 UWF 启用状态（用于联动锁定）
+        self.ufw_enabled = bool(flt.get("CurrentEnabled", False))
         # 写入过滤
         if flt.get("CurrentEnabled") is not None:
             self.var_filter.set("启用" if flt["CurrentEnabled"] else "禁用")
@@ -731,9 +743,41 @@ class UWFApp:
         if cfg.get("MaximumSize"):
             self.ent_max_size.delete(0, tk.END)
             self.ent_max_size.insert(0, str(cfg["MaximumSize"]))
-        ov = None
-        # 从已有的 overlay 数据取阈值（需要缓存或重新查）
-        # 这里用延迟方式：阈值在 refresh 时一起拿到
+        # 阈值（从 UWF_Overlay 读取）
+        if overlay:
+            warn_val = overlay.get("WarningOverlayThreshold")
+            crit_val = overlay.get("CriticalOverlayThreshold")
+            if warn_val is not None:
+                self.ent_warn.delete(0, tk.END)
+                self.ent_warn.insert(0, str(int(warn_val)))
+            if crit_val is not None:
+                self.ent_crit.delete(0, tk.END)
+                self.ent_crit.insert(0, str(int(crit_val)))
+        # --- UWF 状态联动：UWF 启用时设置不可编辑（灰色只读）---
+        self._apply_settings_lock(self.ufw_enabled)
+
+    def _apply_settings_lock(self, uwf_enabled):
+        """UWF 启用时，基本设置与缓存设置全部锁定为灰色只读；
+        UWF 禁用时才可编辑（修改需重启生效，故非 UWF 模式下才允许保存）。"""
+        if uwf_enabled:
+            cstate, estate, bstate = "disabled", "disabled", "disabled"
+        else:
+            cstate, estate, bstate = "readonly", "normal", "normal"
+        for w in (self.cb_filter, self.cb_type, self.cb_horm):
+            try:
+                w.configure(state=cstate)
+            except Exception:
+                pass
+        for w in (self.ent_max_size, self.ent_warn, self.ent_crit):
+            try:
+                w.configure(state=estate)
+            except Exception:
+                pass
+        for w in (self.btn_apply_basic, self.btn_apply_cache):
+            try:
+                w.configure(state=bstate)
+            except Exception:
+                pass
 
     def _update_protect_table(self, vols):
         """更新分区保护表格。"""
@@ -865,6 +909,11 @@ class UWFApp:
 
     # ==================== 操作：应用基本设置 ====================
     def on_apply_basic(self):
+        if getattr(self, "ufw_enabled", False):
+            messagebox.showwarning("不可编辑",
+                "UWF 当前为启用状态，基本设置需先禁用 UWF 才能修改。\n"
+                "请在「状态概览」中关闭写入过滤并重启后再设置。")
+            return
         if not self.admin:
             messagebox.showwarning("权限不足", "请以管理员身份运行。")
             return
@@ -908,6 +957,11 @@ class UWFApp:
 
     # ==================== 操作：应用缓存设置 ====================
     def on_apply_cache(self):
+        if getattr(self, "ufw_enabled", False):
+            messagebox.showwarning("不可编辑",
+                "UWF 当前为启用状态，缓存设置需先禁用 UWF 才能修改。\n"
+                "请在「状态概览」中关闭写入过滤并重启后再设置。")
+            return
         if not self.admin:
             messagebox.showwarning("权限不足", "请以管理员身份运行。")
             return
@@ -1207,90 +1261,105 @@ class UWFApp:
         self.lbl_scan.config(
             text=f"找到 {len(files)} 个文件（>{min_mb}MB, 近{days}天）")
 
-    # ==================== 日志 ====================
-    def generate_log(self, auto=False):
-        try:
-            min_mb = int(self.var_log_min.get())
-        except ValueError:
-            min_mb = 1
-        if not auto:
-            self.lbl_log.config(text="生成中…")
-            self.root.update()
+    # ==================== 实时写入监控 ====================
+    def _monitor_dirs(self):
+        """返回要递归监控的目录（覆盖层写入最常发生的位置）。"""
+        dirs = []
+        for d in ("C:\\Windows", "C:\\Program Files",
+                  "C:\\Program Files (x86)", "C:\\ProgramData",
+                  "C:\\Users"):
+            if os.path.isdir(d):
+                dirs.append(d)
+        return dirs
 
-        def op():
-            c = uwf_core.UWFCore()
-            c.connect()
-            vols = c.get_volumes()
-            protected = list(dict.fromkeys(
-                v["DriveLetter"] for v in vols if v.get("Protected")))
-            if not protected:
-                protected = ["C:"]
-            boot = boot_time_epoch()
-            days_since_boot = max(0.01, (time.time() - boot) / 86400.0)
-            all_files = []
-            for d in protected:
-                try:
-                    files = file_scan.scan_volume(
-                        d, top_n=3000, min_size_mb=min_mb,
-                        days=days_since_boot, timeout_sec=25)
-                    all_files.extend(files)
-                except Exception:
-                    pass
-            all_files.sort(key=lambda x: x["size_bytes"], reverse=True)
-            return all_files[:2000]
+    def on_log_toggle(self):
+        if not self.monitoring:
+            dirs = self._monitor_dirs()
+            if not dirs:
+                messagebox.showwarning("无监控目录", "未找到 C: 下的可监控目录。")
+                return
+            self.monitor.start(dirs)
+            self.monitoring = True
+            self.btn_log_toggle.config(text="关闭记录")
+            self.lbl_log.config(text="● 监控中…", fg=GREEN)
+            self._log_pump()
+        else:
+            self.monitor.stop()
+            self.monitoring = False
+            self.btn_log_toggle.config(text="开启记录")
+            self.lbl_log.config(text="已停止（记录保留）", fg=TEXT_SUB)
+            self._update_log_summary()
 
-        def done(files):
-            self._render_log(files, min_mb)
+    def _log_pump(self):
+        """定时从监控队列取事件刷新界面（仅监控中调用）。"""
+        if not self.monitoring:
+            return
+        events = self.monitor.drain(400)
+        for ts, path, act, size in events:
+            self._log_add_event(ts, path, act, size)
+        self._update_log_summary()
+        self.root.after(400, self._log_pump)
 
-        def fail(m):
-            self.lbl_log.config(text=f"生成失败: {m}")
+    def _log_add_event(self, ts, path, act, size):
+        self.log_event_count += 1
+        tstr = time.strftime("%H:%M:%S", time.localtime(ts))
+        sz = file_scan.format_size(size) if size else "—"
+        if path in self.log_map:
+            row = self.log_map[path]
+            self.tree_log.move(row, "", 0)  # 置顶（最新）
+            self.tree_log.item(row, values=(tstr, path, sz, act))
+        else:
+            row = self.tree_log.insert("", 0, values=(tstr, path, sz, act))
+            self.log_map[path] = row
+            if len(self.log_map) > self.MAX_LOG_ROWS:
+                old_path, old_row = self.log_map.popitem(last=False)
+                self.tree_log.delete(old_row)
+        self.log_records.append((ts, path, act, size))
+        if len(self.log_records) > self.EXPORT_CAP:
+            self.log_records.pop(0)
 
-        self._run_com("log_gen", op, done, fail)
-
-    def _render_log(self, files, min_mb):
-        for i in self.tree_log.get_children():
-            self.tree_log.delete(i)
-        total_bytes = 0
-        for f in files:
-            total_bytes += f["size_bytes"]
-            self.tree_log.insert("", "end", values=(
-                "覆盖层(内存)",
-                f["path"],
-                file_scan.format_size(f["size_bytes"]),
-                f["ext"] or "—"))
+    def _update_log_summary(self):
         self.lbl_log_summary.config(
-            text=f"共 {len(files)} 个文件在内存中，合计 "
-                 f"{file_scan.format_size(total_bytes)}（>{min_mb}MB）")
-        self.lbl_log.config(
-            text=f"已生成（自开机以来写入覆盖层的大文件）")
+            text=f"本次会话已捕获 {self.log_event_count} 次写入事件 · "
+                 f"列表显示最新 {len(self.log_map)} 个不同文件")
+
+    def on_clear_log(self):
+        for row in self.tree_log.get_children():
+            self.tree_log.delete(row)
+        self.log_map.clear()
+        self.log_records.clear()
+        self.log_event_count = 0
+        self._update_log_summary()
 
     def on_export_log(self):
-        if not self.tree_log.get_children():
-            messagebox.showinfo("提示", "请先点击「生成日志」。")
+        if not self.log_records:
+            messagebox.showinfo("提示", "暂无记录，请先「开启记录」。")
             return
         path = filedialog.asksaveasfilename(
             defaultextension=".txt",
             filetypes=[("文本文件", "*.txt")],
-            title="导出覆盖层文件日志")
+            title="导出覆盖层写入记录")
         if not path:
             return
         try:
-            lines = ["UWF 覆盖层文件日志（内存中的文件）"]
-            lines.append(f"生成时间: {time.strftime('%Y-%m-%d %H:%M:%S')}")
-            lines.append("=" * 80)
+            lines = ["UWF 覆盖层实时写入记录"]
+            lines.append(f"导出时间: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+            lines.append(f"监控状态: {'监控中' if self.monitoring else '已停止'}")
+            lines.append(f"捕获事件总数: {self.log_event_count}  "
+                         f"列表文件数: {len(self.log_map)}")
+            lines.append("=" * 90)
             total = 0
-            for row in self.tree_log.get_children():
-                vals = self.tree_log.item(row, "values")
-                status, fpath, size, ext = vals
-                lines.append(f"[{status}] {fpath}  |  {size}  |  {ext}")
-                b = self._parse_size(size)
-                total += b
-            lines.append("=" * 80)
-            lines.append(f"文件总数: {len(self.tree_log.get_children())}  "
-                         f"合计: {file_scan.format_size(total)}")
+            for ts, p, act, size in self.log_records:
+                lines.append(
+                    f"{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(ts))}  "
+                    f"[{act}]  {p}  |  {file_scan.format_size(size)}")
+                total += size or 0
+            lines.append("=" * 90)
+            lines.append(f"记录条数: {len(self.log_records)}  "
+                         f"累计大小: {file_scan.format_size(total)}")
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write("\n".join(lines))
-            messagebox.showinfo("已导出", f"日志已保存:\n{path}")
+            messagebox.showinfo("已导出", f"记录已保存:\n{path}")
         except Exception as e:
             messagebox.showerror("导出失败", str(e))
 
