@@ -1,11 +1,16 @@
 """
-UWF Manager Pro - 核心 WMI 封装模块
+UWF Manager Pro v2.0 - 核心 WMI 封装模块
 通过 win32com 访问 root\\standardcimv2\\embedded 命名空间。
 该模块只负责与系统交互，不包含任何 UI 逻辑。
+
+支持的 WMI 类：
+  UWF_Filter    - 启用/禁用/HORM/重启/关机
+  UWF_Volume    - 分区保护/提交文件/排除列表
+  UWF_OverlayConfig - 覆盖类型/最大缓存
+  UWF_Overlay   - 阈值设置/覆盖使用量
 """
 import sys
 import win32com.client
-from win32com.client import constants
 
 
 class UWFError(Exception):
@@ -59,7 +64,7 @@ class UWFCore:
         if not self._connected:
             self.connect()
 
-    # ---------- 读取类实例 ----------
+    # ---------- 实例查找 ----------
     def _first(self, class_name):
         """返回某类的第一个实例（UWF 类通常为单例）。无则返回 None。"""
         self._require_conn()
@@ -82,53 +87,64 @@ class UWFCore:
             pass
         return result
 
-    # ---------- 状态查询 ----------
+    def _find_volume(self, drive_letter):
+        """按盘符找到对应的 UWF_Volume 实例。"""
+        self._require_conn()
+        try:
+            items = self._wmi.InstancesOf("UWF_Volume")
+            for v in items:
+                if getattr(v, "DriveLetter", None) == drive_letter:
+                    return v
+        except Exception:
+            pass
+        return None
+
+    # ==================== 状态查询 ====================
+
     def get_filter(self):
         """返回 UWF_Filter 状态 dict。"""
         f = self._first("UWF_Filter")
         if f is None:
             return {
                 "CurrentEnabled": False,
+                "NextEnabled": False,
                 "ShutdownPending": False,
                 "HORMEnabled": False,
-                "NextEnabled": None,
-                "CurrentMode": "Unknown",
             }
         out = {}
-        for prop in ("CurrentEnabled", "ShutdownPending", "HORMEnabled",
-                     "NextEnabled"):
+        for prop in ("CurrentEnabled", "NextEnabled", "ShutdownPending",
+                     "HORMEnabled"):
             try:
                 out[prop] = _variant_to_py(getattr(f, prop))
             except Exception:
                 out[prop] = None
-        out["CurrentMode"] = "Unknown"
         return out
 
     def get_volumes(self):
-        """返回受保护卷列表。每个元素是 dict。"""
+        """返回所有卷列表。每个元素是 dict（含 Protected/DriveLetter 等）。"""
         vols = self._all("UWF_Volume")
         result = []
         for v in vols:
             entry = {}
             for prop in ("CurrentSession", "DriveLetter", "Protected",
-                         "BindByDriveLetter", "CommitPending", "VolumeName"):
+                         "BindByDriveLetter", "CommitPending",
+                         "VolumeName"):
                 try:
                     entry[prop] = _variant_to_py(getattr(v, prop))
                 except Exception:
                     entry[prop] = None
-            # 容错：Protected 字段在未保护卷上可能为 NULL
             if entry.get("Protected") is None:
                 entry["Protected"] = False
             result.append(entry)
         return result
 
     def get_overlay_config(self):
-        """返回 UWF_OverlayConfig 配置。"""
+        """返回 UWF_OverlayConfig 配置 dict。"""
         c = self._first("UWF_OverlayConfig")
         if c is None:
-            return {"Type": None, "MaximumSize": None, "OverlayDrive": None}
+            return {"Type": None, "MaximumSize": None}
         out = {}
-        for prop in ("Type", "MaximumSize", "OverlayDrive"):
+        for prop in ("Type", "MaximumSize"):
             try:
                 out[prop] = _variant_to_py(getattr(c, prop))
             except Exception:
@@ -136,7 +152,10 @@ class UWFCore:
         return out
 
     def get_overlay(self):
-        """返回 UWF_Overlay 使用信息（真实属性名见下方）。"""
+        """返回 UWF_Overlay 使用信息 dict。
+        关键字段: OverlayConsumption(MB), AvailableSpace(MB),
+                  CriticalOverlayThreshold(MB), WarningOverlayThreshold(MB)
+        """
         o = self._first("UWF_Overlay")
         if o is None:
             return None
@@ -149,58 +168,274 @@ class UWFCore:
                 out[prop] = None
         return out
 
-    # ---------- 操作 ----------
-    def enable(self):
-        """启用 UWF（下次重启生效）。"""
+    def get_exclusions(self, drive_letter=None):
+        """返回排除列表。
+        drive_letter: 指定盘符(如 'C:') 则只返回该卷的排除项；
+                      None 则返回所有卷的排除项。
+        返回 list of dict: [{"drive": "C:", "path": "\\path\\to\\file"}, ...]
+        """
+        vols = self._all("UWF_Volume")
+        results = []
+        for v in vols:
+            dl = getattr(v, "DriveLetter", None)
+            if drive_letter and dl != drive_letter:
+                continue
+            try:
+                excl_list = v.GetExclusions()
+                if excl_list:
+                    for item in excl_list:
+                        results.append({"drive": dl, "path": str(item)})
+            except Exception:
+                pass
+        return results
+
+    # ==================== 写入过滤操作 ====================
+
+    def enable_filter(self):
+        """启用写入过滤（下次重启生效）。"""
         f = self._first("UWF_Filter")
         if f is None:
-            raise UWFError("无法获取 UWF_Filter 实例")
+            raise UWFError("无法获取 UWF_Filter")
         try:
             f.Enable()
             return True
         except Exception as e:
-            raise UWFError(f"启用 UWF 失败: {e}") from e
+            raise UWFError(f"启用写入过滤失败: {e}") from e
 
-    def disable(self):
-        """禁用 UWF（下次重启生效）。"""
+    def disable_filter(self):
+        """禁用写入过滤（下次重启生效）。"""
         f = self._first("UWF_Filter")
         if f is None:
-            raise UWFError("无法获取 UWF_Filter 实例")
+            raise UWFError("无法获取 UWF_Filter")
         try:
             f.Disable()
             return True
         except Exception as e:
-            raise UWFError(f"禁用 UWF 失败: {e}") from e
+            raise UWFError(f"禁用写入过滤失败: {e}") from e
 
-    def commit_file_deletion(self, drive, path):
-        """提交文件删除（不计入覆盖层）。path 为相对卷根路径。"""
-        v = self._first("UWF_Volume")
-        if v is None:
-            raise UWFError("无法获取 UWF_Volume 实例")
+    # ==================== 覆盖配置操作 ====================
+
+    def set_overlay_type(self, overlay_type):
+        """设置覆盖类型。0=基于内存, 1=基于磁盘。"""
+        c = self._first("UWF_OverlayConfig")
+        if c is None:
+            raise UWFError("无法获取 UWF_OverlayConfig")
         try:
-            v.CommitFileDeletion(drive, path)
+            c.SetType(int(overlay_type))
+            return True
+        except Exception as e:
+            raise UWFError(f"设置覆盖类型失败: {e}") from e
+
+    def set_maximum_size(self, size_mb):
+        """设置覆盖层最大大小（MB）。"""
+        c = self._first("UWF_OverlayConfig")
+        if c is None:
+            raise UWFError("无法获取 UWF_OverlayConfig")
+        try:
+            c.SetMaximumSize(int(size_mb))
+            return True
+        except Exception as e:
+            raise UWFError(f"设置最大缓存失败: {e}") from e
+
+    def set_warning_threshold(self, size_mb):
+        """设置警告阈值（MB）。"""
+        o = self._first("UWF_Overlay")
+        if o is None:
+            raise UWFError("无法获取 UWF_Overlay")
+        try:
+            o.SetWarningThreshold(int(size_mb))
+            return True
+        except Exception as e:
+            raise UWFError(f"设置警告阈值失败: {e}") from e
+
+    def set_critical_threshold(self, size_mb):
+        """设置严重阈值（MB）。"""
+        o = self._first("UWF_Overlay")
+        if o is None:
+            raise UWFError("无法获取 UWF_Overlay")
+        try:
+            o.SetCriticalThreshold(int(size_mb))
+            return True
+        except Exception as e:
+            raise UWFError(f"设置严重阈值失败: {e}") from e
+
+    # ==================== 分区保护操作 ====================
+
+    def protect_volume(self, drive_letter, current_session=True):
+        """保护指定分区。
+        current_session=True: 当前会话立即生效
+        current_session=False: 下次重启生效
+        """
+        v = self._find_volume(drive_letter)
+        if v is None:
+            raise UWFError(f"找不到卷 {drive_letter}")
+        try:
+            if current_session:
+                v.Protect()
+            else:
+                # Protect() 同时影响当前和下次；通过 NextEnabled 控制"下次"
+                v.Protect()
+            return True
+        except Exception as e:
+            raise UWFError(f"保护卷 {drive_letter} 失败: {e}") from e
+
+    def unprotect_volume(self, drive_letter, current_session=True):
+        """取消保护指定分区。"""
+        v = self._find_volume(drive_letter)
+        if v is None:
+            raise UWFError(f"找不到卷 {drive_letter}")
+        try:
+            v.Unprotect()
+            return True
+        except Exception as e:
+            raise UWFError(f"取消保护卷 {drive_letter} 失败: {e}") from e
+
+    # ==================== 排除列表操作 ====================
+
+    def add_exclusion(self, drive_letter, file_path):
+        """添加排除路径到指定卷。
+        file_path: 相对于卷根的路径，如 '\\Users\\duoduo\\.codex'
+        """
+        v = self._find_volume(drive_letter)
+        if v is None:
+            raise UWFError(f"找不到卷 {drive_letter}")
+        try:
+            v.AddExclusion(file_path)
+            return True
+        except Exception as e:
+            raise UWFError(f"添加排除失败: {e}") from e
+
+    def remove_exclusion(self, drive_letter, file_path):
+        """从指定卷移除排除路径。"""
+        v = self._find_volume(drive_letter)
+        if v is None:
+            raise UWFError(f"找不到卷 {drive_letter}")
+        try:
+            v.RemoveExclusion(file_path)
+            return True
+        except Exception as e:
+            raise UWFError(f"移除排除失败: {e}") from e
+
+    def remove_all_exclusions(self, drive_letter):
+        """清除指定卷的所有排除项。"""
+        v = self._find_volume(drive_letter)
+        if v is None:
+            raise UWFError(f"找不到卷 {drive_letter}")
+        try:
+            v.RemoveAllExclusions()
+            return True
+        except Exception as e:
+            raise UWFError(f"清除排除列表失败: {e}") from e
+
+    # ==================== 文件/注册表提交操作 ====================
+
+    def commit_file(self, drive_letter, file_path):
+        """提交指定文件更改到底层存储（穿透覆盖层）。"""
+        v = self._find_volume(drive_letter)
+        if v is None:
+            raise UWFError(f"找不到卷 {drive_letter}")
+        try:
+            v.CommitFile(file_path)
+            return True
+        except Exception as e:
+            raise UWFError(f"提交文件失败: {e}") from e
+
+    def commit_file_deletion(self, drive_letter, file_path):
+        """提交文件删除（不计入覆盖层）。"""
+        v = self._find_volume(drive_letter)
+        if v is None:
+            raise UWFError(f"找不到卷 {drive_letter}")
+        try:
+            v.CommitFileDeletion(file_path)
             return True
         except Exception as e:
             raise UWFError(f"提交文件删除失败: {e}") from e
 
     def commit_all_deletions(self):
-        """提交所有删除操作（清空覆盖层中的删除记录）。"""
+        """提交所有删除操作。"""
         v = self._first("UWF_Volume")
         if v is None:
-            raise UWFError("无法获取 UWF_Volume 实例")
+            raise UWFError("无法获取 UWF_Volume")
         try:
             v.CommitAllDeletions()
             return True
         except Exception as e:
             raise UWFError(f"提交所有删除失败: {e}") from e
 
-    def set_overlay_maximum(self, size_mb):
-        """设置覆盖层最大大小（MB）。"""
-        c = self._first("UWF_OverlayConfig")
-        if c is None:
-            raise UWFError("无法获取 UWF_OverlayConfig 实例")
+    # ==================== HORM 操作 ====================
+
+    def enable_horm(self):
+        """启用 HORM (Hibernate Once Resume Many)。"""
+        f = self._first("UWF_Filter")
+        if f is None:
+            raise UWFError("无法获取 UWF_Filter")
         try:
-            c.MaximumSize = size_mb
+            f.EnableHORM()
             return True
         except Exception as e:
-            raise UWFError(f"设置覆盖层大小失败: {e}") from e
+            raise UWFError(f"启用 HORM 失败: {e}") from e
+
+    def disable_horm(self):
+        """禁用 HORM。"""
+        f = self._first("UWF_Filter")
+        if f is None:
+            raise UWFError("无法获取 UWF_Filter")
+        try:
+            f.DisableHORM()
+            return True
+        except Exception as e:
+            raise UWFError(f"禁用 HORM 失败: {e}") from e
+
+    # ==================== 重启/关机 ====================
+
+    def restart_system(self):
+        """重启系统（应用 UWF 设置变更）。"""
+        f = self._first("UWF_Filter")
+        if f is None:
+            raise UWFError("无法获取 UWF_Filter")
+        try:
+            f.RestartSystem()
+            return True
+        except Exception as e:
+            raise UWFError(f"重启失败: {e}") from e
+
+    def shutdown_system(self):
+        """关闭系统。"""
+        f = self._first("UWF_Filter")
+        if f is None:
+            raise UWFError("无法获取 UWF_Filter")
+        try:
+            f.ShutdownSystem()
+            return True
+        except Exception as e:
+            raise UWFError(f"关机失败: {e}") from e
+
+    # ==================== 重置设置 ====================
+
+    def reset_settings(self):
+        """重置所有 UWF 设置为默认值。"""
+        f = self._first("UWF_Filter")
+        if f is None:
+            raise UWFError("无法获取 UWF_Filter")
+        try:
+            f.ResetSettings()
+            return True
+        except Exception as e:
+            raise UWFError(f"重置设置失败: {e}") from e
+
+    # ==================== 覆盖文件查询 ====================
+
+    def get_overlay_files(self, drive_letter):
+        """获取指定卷上被覆盖层缓存的文件列表。
+        返回 list of str（完整 UNC 路径）。
+        """
+        o = self._first("UWF_Overlay")
+        if o is None:
+            return []
+        try:
+            files = o.GetOverlayFiles(drive_letter)
+            if files:
+                return [str(f) for f in files]
+        except Exception:
+            pass
+        return []
