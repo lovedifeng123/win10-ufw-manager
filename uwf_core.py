@@ -173,6 +173,9 @@ class UWFCore:
         drive_letter: 指定盘符(如 'C:') 则只返回该卷的排除项；
                       None 则返回所有卷的排除项。
         返回 list of dict: [{"drive": "C:", "path": "\\path\\to\\file"}, ...]
+
+        注意：必须用 ExecMethod_("GetExclusions") 而非直接调用
+              v.GetExclusions()，因为 win32com 会将后者错误解析为 int 属性。
         """
         vols = self._all("UWF_Volume")
         results = []
@@ -181,10 +184,14 @@ class UWFCore:
             if drive_letter and dl != drive_letter:
                 continue
             try:
-                excl_list = v.GetExclusions()
+                result = v.ExecMethod_("GetExclusions")
+                # 返回值: ExcludedFiles (COM对象列表) + ReturnValue (int)
+                excl_list = getattr(result, "ExcludedFiles", None)
                 if excl_list:
                     for item in excl_list:
-                        results.append({"drive": dl, "path": str(item)})
+                        fname = getattr(item, "FileName", None)
+                        if fname:
+                            results.append({"drive": dl, "path": str(fname)})
             except Exception:
                 pass
         return results
@@ -294,7 +301,7 @@ class UWFCore:
 
     def add_exclusion(self, drive_letter, file_path):
         """添加排除路径到指定卷。
-        file_path: 相对于卷根的路径，如 '\\Users\\duoduo\\.codex'
+        file_path: 相对于卷根的路径，如 '\\Users\\YourName\\.codex'
         """
         v = self._find_volume(drive_letter)
         if v is None:

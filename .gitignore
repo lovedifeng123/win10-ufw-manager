@@ -1,12 +1,25 @@
+# ---- Build artifacts ----
+/build/
+/dist/
+*.spec
+
+# ---- Python ----
 __pycache__/
 *.pyc
-build/
-dist/
-*.spec
-.venv/
 venv/
-envs/
 buildenv/
-debug_*.py
-diag_*.py
+*.egg-info/
+
+# ---- Runtime / logs ----
+*.log
 uwf_check.log
+_thumbs/
+
+# ---- OS ----
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# ---- Secrets (never commit) ----
+*.token
+.env

@@ -9,8 +9,8 @@ param(
     [Parameter(Mandatory=$true)]
     [string]$Token,
     [string]$Username = $env:USERNAME,
-    [string]$RepoName = "uwf-manager-pro",
-    [string]$Description = "Lightweight open-source UWF (Unified Write Filter) manager for Windows"
+    [string]$RepoName = "win10-ufw-manager",
+    [string]$Description = "Win10 自带还原 UWF (UWF Manager Pro) - 图形化 UWF 统一管理器 / Graphical manager for Windows Unified Write Filter"
 )
 
 $ErrorActionPreference = "Stop"
@@ -39,10 +39,21 @@ git push -u origin main 2>&1 | Out-String | Write-Host
 
 # 3. 创建 Release 并上传 exe
 Write-Host "==> 创建 Release v1.0" -ForegroundColor Cyan
-$relBody = @{tag_name="v1.0"; name="UWF Manager Pro v1.0"; body=$(
-    "首个版本。`n`n功能：`n- UWF 状态面板`n- 覆盖层内存监控（阈值变色）`n- "
-    + "受保护卷列表`n- 文件浏览器（定位覆盖内存占用来源）`n- 启用/禁用/提交删除`n`n"
-    + "需以管理员身份运行。"
+$relBody = @{tag_name="v1.0"; name="UWF Manager Pro v1.0 (Preliminary)"; body=$(
+    "首个公开版本（初步 / preliminary），由用户与 AI 协作开发。`n" +
+    "First public release (preliminary), co-developed by a user and AI.`n`n" +
+    "功能 / Features:`n" +
+    "- UWF 状态面板（覆盖层内存水位、阈值变色）`n" +
+    "- Status dashboard (overlay memory usage, threshold color)`n" +
+    "- 文件浏览器：定位覆盖层内存占用来源`n" +
+    "- File explorer: locate what eats overlay memory`n" +
+    "- 实时写入监控（监听系统盘写入，可导出 TXT）`n" +
+    "- Real-time write monitor (watchdog on system writes, exportable)`n" +
+    "- 设置面板：缓存/阈值/写入过滤/覆盖类型/HORM/排除列表`n" +
+    "- Settings: cache/thresholds/filter/overlay type/HORM/exclusions`n" +
+    "- 启用/禁用/提交删除/重启`n" +
+    "- Enable/Disable/Commit-Delete/Restart`n`n" +
+    "需以管理员身份运行 / Run as Administrator."
 )} | ConvertTo-Json
 $rel = Invoke-RestMethod -Uri "$api/repos/$Username/$RepoName/releases" `
     -Method Post -Headers $auth -Body $relBody -ContentType "application/json"
