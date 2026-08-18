@@ -34,6 +34,11 @@ Microsoft only ships the `uwfmgr.exe` command line — **no GUI**. This tool is 
 
 ## 📌 更新日志 / Changelog
 
+### v2.5 (2026-08-18)
+- 🔔 **托盘显示剩余内存** — 右下角托盘 tooltip 实时显示「UWF 状态 + 剩余内存 X MB（已用 Y MB）」，不再只显示一个盾牌图标。
+- 🛡 **内嵌管理员清单（关键修复）** — 打包时嵌入 `requireAdministrator` 清单，软件启动即自动提权（与参考软件 `UWF管理器.exe` 行为一致）。此前的 `asInvoker` 导致 `uwfmgr` 写入静默失败，正是“分区保护/开启保护根本无效”的根因。
+- 🗂 **分区保护待生效态修正** — 正确解析 `UWF_Volume` 的“当前会话/下次会话”双实例，分区保护表新增「重启后状态」列，保护/取消保护后明确显示「已保护（重启生效）」/「未保护（重启取消）」，重启后自动消除待生效标记；并新增「立即重启生效」按钮。
+
 ### v2.4 (2026-08-18)
 - 🛠 **修复所有写入操作失效** — 启用 / 禁用保护、开启 / 关闭保护、关机保护、排除项增删、阈值设置等全部改为调用官方 `uwfmgr.exe`，彻底解决此前按钮无响应的问题。
 - 🔔 **真实系统托盘** — 改用 Win32 原生通知区图标（右下角任务栏），支持左键双击恢复窗口、右键菜单（显示主窗口 / 退出）。
@@ -67,14 +72,18 @@ Microsoft only ships the `uwfmgr.exe` command line — **no GUI**. This tool is 
 ```bash
 pip install -r requirements.txt
 
-pyinstaller --onefile --windowed --name "UWF Manager Pro" ^
+# 仓库已提供带管理员清单的 spec，直接用它构建（自动以管理员身份运行）：
+pyinstaller "UWF Manager Pro.spec"
+
+# 或手动指定（需附加 --uac-admin 以嵌入管理员清单）：
+pyinstaller --onefile --windowed --uac-admin --name "UWF Manager Pro" ^
   --add-data "uwf_core.py;." ^
   --add-data "file_scan.py;." ^
   --add-data "overlay_monitor.py;." ^
   main.py
 ```
 
-生成的单文件 exe 位于 `dist/UWF Manager Pro.exe`。
+生成的单文件 exe 位于 `dist/UWF Manager Pro.exe`（已内嵌 `requireAdministrator` 清单，启动即自动提权）。
 
 > 说明：WMI 的 `GetOverlayFiles` 在部分环境枚举量过大时会挂起，故实时监控改用 `ReadDirectoryChangesW` 文件系统监听（UWF 下所有系统盘写入都落在覆盖层，等价于监控“写进了内存的文件”）。
 

@@ -142,20 +142,34 @@ class UWFCore:
         return out
 
     def get_volumes(self):
+        """返回按盘符聚合后的卷状态。
+
+        UWF_Volume 每个盘符会有两条实例：一条 CurrentSession=True
+        （当前会话实际状态），一条 CurrentSession=False（下次重启后状态）。
+        必须按盘符聚合，否则会误读。
+
+        返回字段：
+          DriveLetter       盘符
+          CurrentProtected 当前会话是否已保护（最权威）
+          NextProtected    下次重启后是否保护（None=与当前一致/未知）
+          CommitPending    是否有提交待处理
+        """
         vols = self._all("UWF_Volume")
-        result = []
+        by_drive = {}
         for v in vols:
-            entry = {}
-            for prop in ("CurrentSession", "DriveLetter", "Protected",
-                         "BindByDriveLetter", "CommitPending", "VolumeName"):
-                try:
-                    entry[prop] = _variant_to_py(getattr(v, prop))
-                except Exception:
-                    entry[prop] = None
-            if entry.get("Protected") is None:
-                entry["Protected"] = False
-            result.append(entry)
-        return result
+            dl = (getattr(v, "DriveLetter", None) or "?")
+            cur = bool(getattr(v, "CurrentSession", False))
+            prot = getattr(v, "Protected", None)
+            entry = by_drive.setdefault(
+                dl, {"DriveLetter": dl, "CurrentProtected": False,
+                     "NextProtected": None, "CommitPending": False})
+            if cur:
+                entry["CurrentProtected"] = bool(prot)
+            else:
+                entry["NextProtected"] = bool(prot) if prot is not None else None
+            if getattr(v, "CommitPending", False):
+                entry["CommitPending"] = True
+        return list(by_drive.values())
 
     def get_overlay_config(self):
         c = self._first("UWF_OverlayConfig")

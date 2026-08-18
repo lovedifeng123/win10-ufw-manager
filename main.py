@@ -1,5 +1,5 @@
 """
-UWF Manager Pro v2.4 - 主程序（tkinter UI）
+UWF Manager Pro v2.5 - 主程序（tkinter UI）
 功能：
   1. 状态面板：启用/禁用/HORM/关机待处理
   2. 覆盖层内存监控（已用/总容量/阈值变色）← 修复数据显示
@@ -86,7 +86,7 @@ class SystemTrayIcon:
         self.hwnd = win32gui.CreateWindow(
             self.atom, "UWFManagerProTray", 0, 0, 0, 0, 0, 0, 0,
             wc.hInstance, None)
-        self.hicon = win32gui.LoadIcon(0, 32518)  # IDI_SHIELD
+        self.hicon = win32gui.LoadIcon(0, win32con.IDI_APPLICATION)
         self.visible = True
         flags = win32gui.NIF_ICON | win32gui.NIF_MESSAGE | win32gui.NIF_TIP
         nid = (self.hwnd, 0, flags, self.WM_TRAY, self.hicon,
@@ -172,6 +172,7 @@ class UWFApp:
         self.settings_gen = 0
         self.rt_gen = 0
         self._rendered = False
+        self._pending_protect = {}   # 盘符 -> True(待生效保护)/False(待取消)
         # 实时写入监控状态
         self.monitor = overlay_monitor.OverlayMonitor()
         self.monitoring = False
@@ -219,7 +220,7 @@ class UWFApp:
 
     # ==================== UI 布局 ====================
     def _setup_ui(self):
-        self.root.title("UWF Manager Pro v2.4")
+        self.root.title("UWF Manager Pro v2.5")
         self.root.geometry("1100x800")
         self.root.configure(bg=BG)
         self.root.minsize(900, 680)
@@ -240,7 +241,7 @@ class UWFApp:
         title_bar = tk.Frame(self.root, bg=ACCENT, height=48)
         title_bar.pack(fill=tk.X)
         title_bar.pack_propagate(False)
-        tk.Label(title_bar, text="UWF Manager Pro v2.4",
+        tk.Label(title_bar, text="UWF Manager Pro v2.5",
                  font=FONT_TITLE, fg="white", bg=ACCENT).pack(
             side=tk.LEFT, padx=18, pady=8)
         self.lbl_admin = tk.Label(title_bar, text="", font=FONT_BOLD,
@@ -329,7 +330,7 @@ class UWFApp:
 
         # --- 受保护卷 ---
         inner = self._card(content, "受保护卷")
-        cols = ("盘符", "保护状态", "覆盖占用", "会话", "提交待处理")
+        cols = ("盘符", "保护状态", "覆盖占用", "重启后", "提交待处理")
         self.tree_vol = ttk.Treeview(inner, columns=cols, show="headings",
                                      height=4)
         for c in cols:
@@ -489,8 +490,8 @@ class UWFApp:
         right_col = tk.Frame(content, bg=BG)
         right_col.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(4, 8), pady=8)
 
-        inner = self._card(right_col, "分区保护设置（当前状态 / 重启状态）")
-        cols = ("分区", "当前状态", "生效")
+        inner = self._card(right_col, "分区保护设置（当前状态 / 重启后状态）")
+        cols = ("分区", "当前状态", "重启后状态")
         self.tree_protect = ttk.Treeview(inner, columns=cols, show="headings",
                                          height=6)
         for c in cols:
@@ -513,6 +514,8 @@ class UWFApp:
                    command=self.on_protect_selected).pack(side=tk.LEFT, padx=2)
         ttk.Button(prot_btns, text="不保护选中", width=12,
                    command=self.on_unprotect_selected).pack(side=tk.LEFT, padx=2)
+        ttk.Button(prot_btns, text="立即重启生效", width=14,
+                   command=self.on_restart).pack(side=tk.LEFT, padx=2)
 
     # ==================== Tab 3: 排除列表 ====================
     def _build_tab_exclusions(self, parent):
@@ -737,6 +740,8 @@ class UWFApp:
             if hasattr(self, 'lbl_avail_space'):
                 self.lbl_avail_space.config(
                     text=f"可用空间: {avail_mb:.0f} MB")
+            # 托盘显示剩余内存
+            self._update_tray(flt, overlay)
         elif cfg.get("MaximumSize"):
             self.lbl_overlay.config(text=f"上限 {cfg['MaximumSize']} MB")
             self.lbl_overlay_detail.config(text="（无实时用量数据）")
@@ -753,15 +758,15 @@ class UWFApp:
             if dl in seen:
                 continue
             seen.add(dl)
-            prot = "已保护" if v.get("Protected") else "未保护"
+            prot = "已保护" if v.get("CurrentProtected") else "未保护"
             cons = v.get("OverlayConsumption")
             cons_s = f"{cons:.0f} MB" if cons else "—"
-            sess = v.get("CurrentSession")
-            sess_s = "当前会话" if sess else "仅下次"
+            nxt = v.get("NextProtected")
+            nxt_s = ("已保护" if nxt else "未保护") if nxt is not None else "不变"
             cp = v.get("CommitPending")
             cp_s = "有" if cp else "无"
             self.tree_vol.insert("", "end", values=(
-                dl, prot, cons_s, sess_s, cp_s))
+                dl, prot, cons_s, nxt_s, cp_s))
 
         # --- 更新设置面板 ---
         self._update_settings_panel(flt, cfg, overlay)
@@ -773,6 +778,19 @@ class UWFApp:
         self.lbl_msg.config(
             text=f"最后刷新: {time.strftime('%H:%M:%S')}  |  "
                  f"root\\standardcimv2\\embedded ✓")
+
+    def _update_tray(self, flt, overlay):
+        """托盘 tooltip 显示剩余内存（模仿参考软件：右下角实时显示剩余）。"""
+        try:
+            enabled = flt.get("CurrentEnabled")
+            ov = overlay or {}
+            avail = ov.get("AvailableSpace") or 0
+            used = ov.get("OverlayConsumption") or 0
+            txt = (f"UWF {'已启用' if enabled else '已禁用'}  "
+                   f"剩余内存 {avail:.0f} MB（已用 {used:.0f} MB）")
+            self.tray.update_tooltip(txt)
+        except Exception:
+            pass
 
     def _update_settings_panel(self, flt, cfg, overlay=None):
         """将数据填入设置面板控件。"""
@@ -829,7 +847,13 @@ class UWFApp:
                 pass
 
     def _update_protect_table(self, vols):
-        """更新分区保护表格。"""
+        """更新分区保护表格。
+
+        列：分区 / 当前状态 / 重启后状态
+        - 当前状态：来自 WMI 的 CurrentSession（本会话实际生效状态）。
+        - 重启后状态：若有待生效操作（待保护/待取消），显示「重启生效」，
+          重启后实际状态变化时自动清除待生效标记。
+        """
         for i in self.tree_protect.get_children():
             self.tree_protect.delete(i)
         seen = set()
@@ -838,8 +862,23 @@ class UWFApp:
             if dl in seen:
                 continue
             seen.add(dl)
-            cur = "已保护" if v.get("Protected") else "未保护"
-            nxt = "当前会话" if v.get("CurrentSession") else "下次重启"
+            cur_prot = bool(v.get("CurrentProtected"))
+            cur = "已保护" if cur_prot else "未保护"
+            pending = self._pending_protect.get(dl)
+            if pending is True:
+                nxt = "已保护（重启生效）"
+                if cur_prot:  # 已真正生效，清除待标记
+                    self._pending_protect.pop(dl, None)
+                    nxt = "已保护"
+            elif pending is False:
+                nxt = "未保护（重启取消）"
+                if not cur_prot:
+                    self._pending_protect.pop(dl, None)
+                    nxt = "未保护"
+            else:
+                np = v.get("NextProtected")
+                nxt = ("已保护" if np else "未保护") if np is not None \
+                    else ("已保护" if cur_prot else "未保护")
             self.tree_protect.insert("", "end", values=(dl, cur, nxt))
 
     def _refresh_exclusions_ui(self):
@@ -912,11 +951,6 @@ class UWFApp:
             text=f"下次启动: {next_s}  |  "
                  f"HORM: {'开' if flt.get('HORMEnabled') else '关'}  |  "
                  f"关机待处理: {'是' if flt.get('ShutdownPending') else '否'}")
-        try:
-            self.tray.update_tooltip(
-                f"UWF {'已启用' if enabled else '已禁用'}")
-        except Exception:
-            pass
         # --- 覆盖层内存（实时）---
         if overlay:
             used_mb = overlay.get("OverlayConsumption") or 0
@@ -951,6 +985,8 @@ class UWFApp:
         else:
             self.lbl_overlay.config(text="—")
             self.lbl_overlay_detail.config(text="")
+        # 托盘显示剩余内存（实时）
+        self._update_tray(flt, overlay)
         # --- 卷列表（实时）---
         for i in self.tree_vol.get_children():
             self.tree_vol.delete(i)
@@ -960,15 +996,15 @@ class UWFApp:
             if dl in seen:
                 continue
             seen.add(dl)
-            prot = "已保护" if v.get("Protected") else "未保护"
+            prot = "已保护" if v.get("CurrentProtected") else "未保护"
             cons = v.get("OverlayConsumption")
             cons_s = f"{cons:.0f} MB" if cons else "—"
-            sess = v.get("CurrentSession")
-            sess_s = "当前会话" if sess else "仅下次"
+            nxt = v.get("NextProtected")
+            nxt_s = ("已保护" if nxt else "未保护") if nxt is not None else "不变"
             cp = v.get("CommitPending")
             cp_s = "有" if cp else "无"
             self.tree_vol.insert("", "end", values=(
-                dl, prot, cons_s, sess_s, cp_s))
+                dl, prot, cons_s, nxt_s, cp_s))
 
     # ==================== 操作：启用/禁用 ====================
     def on_toggle(self):
@@ -1165,7 +1201,11 @@ class UWFApp:
             return f"{drive_letter} → {action}"
 
         def done(msg):
-            messagebox.showinfo("成功", f"{msg}\n重启后生效。")
+            # 记录待生效状态，重启后由 _update_protect_table 自动消除
+            self._pending_protect[drive_letter] = protect
+            messagebox.showinfo(
+                "成功", f"{msg}\n重启后生效。\n"
+                        f"可在「状态概览」点「重启系统」使其立即生效。")
             self.refresh()
 
         def fail(m):
@@ -1370,7 +1410,7 @@ class UWFApp:
             c.connect()
             vols = c.get_volumes()
             protected = list(dict.fromkeys(
-                v["DriveLetter"] for v in vols if v.get("Protected")))
+                v["DriveLetter"] for v in vols if v.get("CurrentProtected")))
             if not protected:
                 protected = ["C:"]
             all_files = []
