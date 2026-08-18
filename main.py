@@ -1,5 +1,5 @@
 """
-UWF Manager Pro v2.7 - 主程序（tkinter UI）
+UWF Manager Pro v2.8 - 主程序（tkinter UI）
 功能：
   1. 状态面板：启用/禁用/HORM/关机待处理
   2. 覆盖层内存监控（已用/总容量/阈值变色）← 修复数据显示
@@ -73,17 +73,24 @@ def boot_time_epoch():
         return time.time() - 86400
 
 
-# ==================== 托盘图标类（真实系统托盘）====================
+# ==================== 托盘图标类（真实系统托盘 + 动态数字图标）====================
 class SystemTrayIcon:
-    """基于 win32gui 的真实系统托盘图标（右下角通知区）。"""
+    """基于 win32gui 的真实系统托盘图标。图标动态显示 UWF 剩余内存数值。"""
 
     WM_TRAY = win32con.WM_USER + 20
+
+    # 图标配色（参考用户截图：深色底 + 黄色数字）
+    ICON_BG = (45, 45, 45)       # #2D2D2D 深灰底
+    ICON_FG_NORMAL = (230, 184, 0)   # #E6B800 金黄（正常）
+    ICON_FG_WARN = (255, 80, 60)     # #FF503C 红色（<20% 剩余）
+    ICON_SIZE = 64                  # 64x64 高清，系统自动缩放
 
     def __init__(self, parent_app):
         self.app = parent_app
         self.visible = False
         self.hwnd = None
         self.hicon = None
+        self._last_text = ""          # 避免重复渲染相同图标
         self._init()
 
     def _init(self):
@@ -101,12 +108,20 @@ class SystemTrayIcon:
         self.hwnd = win32gui.CreateWindow(
             self.atom, "UWFManagerProTray", 0, 0, 0, 0, 0, 0, 0,
             wc.hInstance, None)
-        self.hicon = win32gui.LoadIcon(0, win32con.IDI_APPLICATION)
+        # 默认图标（PIL 未就绪时使用）
+        self.hicon = self._make_default_icon()
         self.visible = True
         flags = win32gui.NIF_ICON | win32gui.NIF_MESSAGE | win32gui.NIF_TIP
         nid = (self.hwnd, 0, flags, self.WM_TRAY, self.hicon,
                "UWF Manager Pro")
         win32gui.Shell_NotifyIcon(win32gui.NIM_ADD, nid)
+
+    def _make_default_icon(self):
+        """生成默认图标（显示 "--" 占位）。"""
+        try:
+            return self._create_hicon_from_text("--")
+        except Exception:
+            return win32gui.LoadIcon(0, win32con.IDI_APPLICATION)
 
     def _wndproc(self, hwnd, msg, wparam, lparam):
         if msg == self.WM_TRAY:
@@ -120,6 +135,10 @@ class SystemTrayIcon:
                 self.restore()
             elif cmd == 2:
                 self.quit_app()
+            elif cmd == 3:
+                # 托盘右键 → 清理缓存
+                try: self.app.on_clean_cache()
+                except Exception: pass
         elif msg == win32con.WM_DESTROY:
             self.destroy()
         return win32gui.DefWindowProc(hwnd, msg, wparam, lparam)
@@ -127,6 +146,8 @@ class SystemTrayIcon:
     def _show_menu(self):
         menu = win32gui.CreatePopupMenu()
         win32gui.AppendMenu(menu, win32con.MF_STRING, 1, "显示主窗口")
+        win32gui.AppendMenu(menu, win32con.MF_STRING, 3, "清理缓存释放覆盖层")
+        win32gui.AppendMenu(menu, win32con.MF_SEPARATOR, 0, "")
         win32gui.AppendMenu(menu, win32con.MF_STRING, 2, "退出")
         pos = win32api.GetCursorPos()
         win32gui.SetForegroundWindow(self.hwnd)
@@ -142,6 +163,178 @@ class SystemTrayIcon:
                 win32gui.Shell_NotifyIcon(win32gui.NIM_MODIFY, nid)
             except Exception:
                 pass
+
+    def update_icon(self, text, warn=False):
+        """动态更新托盘图标（显示剩余内存数字）。text 如 '3.2G' / '45%' / '1.2G'。
+        warn=True 时文字变红色警示。相同文本跳过渲染以节省 CPU。"""
+        if text == self._last_text:
+            return
+        self._last_text = text
+        try:
+            new_hicon = self._create_hicon_from_text(text, warn=warn)
+            if new_hicon and self.hicon != new_hicon:
+                # 销毁旧图标句柄
+                if self.hicon:
+                    try: win32gui.DestroyIcon(self.hicon)
+                    except Exception: pass
+                self.hicon = new_hicon
+                if self.visible and self.hwnd:
+                    nid = (self.hwnd, 0, win32gui.NIF_ICON,
+                           self.WM_TRAY, self.hicon, "")
+                    win32gui.Shell_NotifyIcon(win32gui.NIM_MODIFY, nid)
+        except Exception:
+            pass
+
+    def _create_hicon_from_text(self, text, warn=False):
+        """用 PIL 生成 HICON：深色底 + 数字文字。"""
+        from PIL import Image, ImageDraw, ImageFont
+        import struct
+
+        size = self.ICON_SIZE
+        img = Image.new("RGB", (size, size), self.ICON_BG)
+        draw = ImageDraw.Draw(img)
+
+        # 尝试加载等宽/清晰字体，回退到默认
+        font = None
+        for font_name in ("arial.ttf", "segoeui.ttf", "tahoma.ttf",
+                          "C:/Windows/Fonts/arial.ttf",
+                          "C:/Windows/Fonts/segoeui.ttf",
+                          "C:/Windows/Fonts/tahoma.ttf"):
+            try:
+                font = ImageFont.truetype(font_name, int(size * 0.55))
+                break
+            except Exception:
+                continue
+        if font is None:
+            font = ImageFont.load_default()
+
+        color = self.ICON_FG_WARN if warn else self.ICON_FG_NORMAL
+
+        # 居中绘制文字
+        bbox = draw.textbbox((0, 0), text, font=font)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        x = (size - tw) // 2 - bbox[0]
+        y = (size - th) // 2 - bbox[1]
+        draw.text((x, y), text, fill=color, font=font)
+
+        # 转换为 HICON（带 AND 掩码实现透明/圆角效果）
+        img_with_alpha = img.convert("RGBA")
+        # 创建圆角矩形蒙版
+        mask = Image.new("L", (size, size), 0)
+        mask_draw = ImageDraw.Draw(mask)
+        r = int(size * 0.18)  # 圆角半径
+        mask_draw.rounded_rectangle([(0, 0), (size-1, size-1)], radius=r, fill=255)
+
+        # 合成 RGBA
+        r, g, b = img_with_alpha.split()[:3]
+        a = mask
+        rgba = Image.merge("RGBA", (r, g, b, a))
+
+        # PIL → BMP → HICON
+        hicon = self._pil_to_hicon(rgba)
+        return hicon
+
+    @staticmethod
+    def _pil_to_hicon(rgba_img):
+        """将 PIL RGBA 图像转为 Windows HICON 句柄（32-bit ARGB + 圆角）。"""
+        import ctypes
+        from ctypes import wintypes
+
+        w, h = rgba_img.size
+        bgra = rgba_img.tobytes("raw", "BGRA")
+
+        class BITMAPV5HEADER(ctypes.Structure):
+            _fields_ = [
+                ("bV5Size", wintypes.DWORD), ("bV5Width", wintypes.LONG),
+                ("bV5Height", wintypes.LONG), ("bV5Planes", wintypes.WORD),
+                ("bV5BitCount", wintypes.WORD), ("bV5Compression", wintypes.DWORD),
+                ("bV5SizeImage", wintypes.DWORD), ("bV5XPelsPerMeter", wintypes.LONG),
+                ("bV5YPelsPerMeter", wintypes.LONG), ("bV5ClrUsed", wintypes.DWORD),
+                ("bV5ClrImportant", wintypes.DWORD), ("bV5RedMask", wintypes.DWORD),
+                ("bV5GreenMask", wintypes.DWORD), ("bV5BlueMask", wintypes.DWORD),
+                ("bV5AlphaMask", wintypes.DWORD), ("bV5CSType", wintypes.DWORD),
+                ("bV5Endpoints", wintypes.BYTE * 36), ("bV5GammaRed", wintypes.DWORD),
+                ("bV5GammaGreen", wintypes.DWORD), ("bV5GammaBlue", wintypes.DWORD),
+                ("bV5Intent", wintypes.DWORD), ("bV5ProfileData", wintypes.DWORD),
+                ("bV5ProfileSize", wintypes.DWORD), ("bV5Reserved", wintypes.DWORD),
+            ]
+
+        hdr = BITMAPV5HEADER()
+        hdr.bV5Size = ctypes.sizeof(BITMAPV5HEADER)
+        hdr.bV5Width = w
+        hdr.bV5Height = -h          # top-down（负值）
+        hdr.bV5Planes = 1
+        hdr.bV5BitCount = 32
+        hdr.bV5Compression = 3     # BI_BITFIELDS (ARGB)
+        hdr.bV5AlphaMask = 0xFF000000
+        hdr.bV5RedMask   = 0x00FF0000
+        hdr.bV5GreenMask = 0x0000FF00
+        hdr.bV5BlueMask  = 0x000000FF
+        hdr.bV5SizeImage = w * h * 4
+
+        hdc = ctypes.windll.user32.GetDC(0)
+        ppbits = ctypes.c_void_p()
+        hbmp_color = ctypes.windll.gdi32.CreateDIBSection(
+            hdc, ctypes.byref(hdr), 0, ctypes.byref(ppbits), None, 0)
+        if not hbmp_color or not ppbits:
+            return None
+        ctypes.memmove(ppbits, bgra, len(bgra))
+
+        # AND 掩码（ARGB 模式下可为空位图）
+        hbmp_mask = ctypes.windll.gdi32.CreateBitmap(w, h, 1, 1, None)
+
+        class ICONINFO(ctypes.Structure):
+            _fields_ = [("fIcon", wintypes.BOOL), ("xHotspot", wintypes.DWORD),
+                        ("yHotspot", wintypes.DWORD), ("hbmColor", wintypes.HBITMAP),
+                        ("hbmMask", wintypes.HBITMAP)]
+
+        ii = ICONINFO(True, 0, 0, hbmp_color, hbmp_mask)
+        hicon = ctypes.windll.user32.CreateIconIndirect(ctypes.byref(ii))
+
+        # 清理 GDI 对象
+        ctypes.windll.gdi32.DeleteObject(hbmp_color)
+        ctypes.windll.gdi32.DeleteObject(hbmp_mask)
+        ctypes.windll.user32.ReleaseDC(0, hdc)
+        return hicon
+
+    def show_balloon(self, title, message, warn=False):
+        """显示托盘气泡通知（Windows 10+ 支持）。"""
+        if not self.visible or not self.hwnd:
+            return
+        try:
+            # NIIF_WARNING=3(黄), NIIF_ERROR=2(红), NIIF_INFO=1(蓝/默认)
+            icon_flag = 2 if warn else 1  # 红色警示 / 蓝色信息
+            # Shell_NotifyIcon 需要特殊结构，用 NIM_MODIFY + NIF_INFO
+            import ctypes
+            class NOTIFYICONDATA(ctypes.Structure):
+                _fields_ = [
+                    ("cbSize", ctypes.c_uint),
+                    ("hWnd", ctypes.c_void_p),
+                    ("uID", ctypes.c_uint),
+                    ("uFlags", ctypes.c_uint),
+                    ("uCallbackMessage", ctypes.c_uint),
+                    ("hIcon", ctypes.c_void_p),
+                    ("szTip", ctypes.c_wchar * 128),
+                    ("dwState", ctypes.c_uint),
+                    ("dwStateMask", ctypes.c_uint),
+                    ("szInfo", ctypes.c_wchar * 256),
+                    ("uTimeoutOrVersion", ctypes.c_union),
+                    ("szInfoTitle", ctypes.c_wchar * 64),
+                    ("dwInfoFlags", ctypes.c_uint),
+                ]
+            nid_data = NOTIFYICONDATA()
+            nid_data.cbSize = ctypes.sizeof(NOTIFYICONDATA)
+            nid_data.hWnd = self.hwnd
+            nid_data.uID = 0
+            nid_data.uFlags = win32gui.NIF_INFO | win32gui.NIF_ICON
+            nid_data.hIcon = self.hicon if self.hicon else 0
+            nid_data.szInfo = message[:255]
+            nid_data.szInfoTitle = title[:63]
+            nid_data.dwInfoFlags = icon_flag
+            nid_data.uTimeoutOrVersion = 10000
+            win32gui.Shell_NotifyIcon(win32gui.NIM_MODIFY, nid_data)
+        except Exception:
+            pass
 
     def restore(self):
         try:
@@ -235,7 +428,7 @@ class UWFApp:
 
     # ==================== UI 布局 ====================
     def _setup_ui(self):
-        self.root.title("UWF Manager Pro v2.7")
+        self.root.title("UWF Manager Pro v2.8")
         self.root.geometry("1100x800")
         self.root.configure(bg=BG)
         self.root.minsize(900, 680)
@@ -838,17 +1031,154 @@ class UWFApp:
                  f"root\\standardcimv2\\embedded ✓")
 
     def _update_tray(self, flt, overlay):
-        """托盘 tooltip 显示剩余内存（模仿参考软件：右下角实时显示剩余）。"""
+        """托盘图标 + tooltip 同步更新（动态数字图标 + 剩余内存提示）。"""
         try:
             enabled = flt.get("CurrentEnabled")
             ov = overlay or {}
             avail = ov.get("AvailableSpace") or 0
+            max_sz = ov.get("MaximumSize") or 0
             used = ov.get("OverlayConsumption") or 0
+
+            # --- 动态图标文字 ---
+            if enabled and avail > 0:
+                if max_sz > 0:
+                    pct = avail / max_sz * 100
+                    if avail >= 1024:
+                        icon_text = f"{avail / 1024:.1f}G"
+                    else:
+                        icon_text = f"{avail:.0f}M"
+                else:
+                    pct = 100
+                    icon_text = f"{avail:.0f}M" if avail >= 100 else f"{avail:.0f}"
+                warn = (pct < 20)  # 剩余 < 20% 变红
+            elif not enabled:
+                icon_text = "OFF"
+                warn = False
+            else:
+                icon_text = "--"
+                warn = False
+            self.tray.update_icon(icon_text, warn=warn)
+
+            # --- Tooltip ---
             txt = (f"UWF {'已启用' if enabled else '已禁用'}  "
-                   f"剩余内存 {avail:.0f} MB（已用 {used:.0f} MB）")
+                   f"剩余 {avail:.0f} MB（已用 {used:.0f} MB）")
+            if max_sz > 0:
+                txt += f"  总容量 {max_sz:.0f} MB"
             self.tray.update_tooltip(txt)
+
+            # --- 覆盖层使用率阈值检测 → 缓存清理提醒 ---
+            self._check_overlay_threshold(avail, max_sz)
         except Exception:
             pass
+
+    # ==================== 覆盖层阈值监控 + 缓存清理 ====================
+
+    # 阈值配置：使用率 >= 此值时触发提醒（0.0~1.0）
+    OVERLAY_WARN_RATIO = 0.65       # 已用 ≥ 65% 提醒
+    OVERLAY_CRITICAL_RATIO = 0.85   # 已用 ≥ 85% 紧急
+    _last_warn_time = 0             # 上次提醒时间戳（避免频繁弹）
+    _WARN_COOLDOWN = 300            # 冷却 5 分钟（秒）
+
+    def _check_overlay_threshold(self, avail_mb, max_mb):
+        """检查覆盖层使用率，超阈值时通过托盘气泡通知用户。"""
+        if max_mb <= 0 or avail_mb < 0:
+            return
+        used_ratio = 1.0 - (avail_mb / max_mb)
+        now = time.time()
+
+        if used_ratio >= self.OVERLAY_CRITICAL_RATIO and \
+           (now - self._last_warn_time > self._WARN_COOLDOWN):
+            self._last_warn_time = now
+            used_mb = max_mb - avail_mb
+            self.tray.show_balloon(
+                "UWF 覆盖层紧急",
+                f"已用 {used_mb:.0f}MB / {max_mb:.0f}MB ({used_ratio*100:.0f}%)\n"
+                "覆盖层即将耗尽！建议立即清理缓存。",
+                warn=True)
+        elif used_ratio >= self.OVERLAY_WARN_RATIO and \
+             (now - self._last_warn_time > self._WARN_COOLDOWN):
+            self._last_warn_time = now
+            used_mb = max_mb - avail_mb
+            self.tray.show_balloon(
+                "UWF 覆盖层偏高",
+                f"已用 {used_mb:.0f}MB / {max_mb:.0f}MB ({used_ratio*100:.0f}%)\n"
+                "可右键托盘图标选择「清理缓存释放覆盖层」。",
+                warn=False)
+
+    def on_clean_cache(self):
+        """执行缓存清理：删除临时文件/浏览器缓存等，释放 UWF 覆盖层空间。"""
+        import glob as _glob
+        import shutil
+
+        # 定义清理目标：(标签, 路径模式列表, 说明)
+        targets = [
+            ("用户临时文件", [
+                os.path.join(os.environ.get("TEMP", ""), "*"),
+            ], "%%TEMP%% 目录"),
+            ("系统临时文件", [
+                r"C:\Windows\Temp\*",
+            ], "C:\\Windows\\Temp"),
+            ("Windows 预读取", [
+                r"C:\Windows\Prefetch\*.pf",
+            ], "Prefetch (*.pf)"),
+            ("缩略图缓存", [
+                os.path.join(os.environ.get("LOCALAPPDATA", ""),
+                             r"Microsoft\Windows\Explorer\thumbcache_*.db"),
+            ], "缩略图缓存"),
+            ("Chrome 缓存", [
+                os.path.join(os.environ.get("LOCALAPPDATA", ""),
+                             r"Google\Chrome\User Data\Default\Cache\*"),
+                os.path.join(os.environ.get("LOCALAPPDATA", ""),
+                             r"Google\Chrome\User Data\Default\Code Cache\*"),
+            ], "Chrome 浏览器缓存"),
+            ("Edge 缓存", [
+                os.path.join(os.environ.get("LOCALAPPDATA", ""),
+                             r"Microsoft\Edge\User Data\Default\Cache\*"),
+                os.path.join(os.environ.get("LOCALAPPDATA", ""),
+                             r"Microsoft\Edge\User Data\Default\Code Cache\*"),
+            ], "Edge 浏览器缓存"),
+            ("Windows 更新缓存", [
+                r"C:\Windows\SoftwareDistribution\Download\*",
+            ], "Windows Update 下载缓存"),
+        ]
+
+        # 确认对话框
+        msg = ("即将清理以下缓存以释放 UWF 覆盖层空间：\n\n"
+               + "\n".join(f"  • {t[2]}" for t in targets)
+               + "\n\n这些均为临时/缓存文件，删除安全。\n是否继续？")
+        if not messagebox.askyesno("确认清理缓存", msg):
+            return
+
+        total_freed = 0
+        details = []
+        for label, patterns, desc in targets:
+            freed = 0
+            count = 0
+            for pat in patterns:
+                for fpath in _glob.glob(pat):
+                    try:
+                        if os.path.isfile(fpath):
+                            sz = os.path.getsize(fpath)
+                            os.remove(fpath)
+                            freed += sz
+                            count += 1
+                        elif os.path.isdir(fpath):
+                            shutil.rmtree(fpath, ignore_errors=True)
+                            count += 1
+                    except (OSError, PermissionError, FileNotFoundError):
+                        continue
+            total_freed += freed
+            if freed > 0 or count > 0:
+                details.append(f"  {label}: 清理 {count} 项, "
+                               f"释放 {human_size(freed)}")
+
+        # 报告结果
+        report = (f"清理完成！共释放: **{human_size(total_freed)}**\n\n"
+                  + "\n".join(details) if details else "未找到可清理的文件。")
+        messagebox.showinfo("缓存清理报告", report)
+
+        # 刷新覆盖层数据（清理后数值应变大）
+        self._auto_refresh()
 
     def _update_settings_panel(self, flt, cfg, overlay=None):
         """将数据填入设置面板控件。"""
