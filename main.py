@@ -186,22 +186,23 @@ class SystemTrayIcon:
             pass
 
     def _create_hicon_from_text(self, text, warn=False):
-        """用 PIL 生成 HICON：深色底 + 数字文字。"""
+        """用 PIL 生成 HICON：深色底 + 数字文字（经典 24-bit DIB + AND mask 方式）。"""
         from PIL import Image, ImageDraw, ImageFont
         import struct
 
         size = self.ICON_SIZE
+        # --- 1. PIL 渲染文字到 RGB 图像 ---
         img = Image.new("RGB", (size, size), self.ICON_BG)
         draw = ImageDraw.Draw(img)
 
-        # 尝试加载等宽/清晰字体，回退到默认
+        # 加载字体（优先 Windows 系统字体）
         font = None
-        for font_name in ("arial.ttf", "segoeui.ttf", "tahoma.ttf",
-                          "C:/Windows/Fonts/arial.ttf",
+        for font_name in ("C:/Windows/Fonts/arial.ttf",
                           "C:/Windows/Fonts/segoeui.ttf",
-                          "C:/Windows/Fonts/tahoma.ttf"):
+                          "C:/Windows/Fonts/tahoma.ttf",
+                          "arial.ttf", "segoeui.ttf"):
             try:
-                font = ImageFont.truetype(font_name, int(size * 0.55))
+                font = ImageFont.truetype(font_name, int(size * 0.50))
                 break
             except Exception:
                 continue
@@ -214,81 +215,92 @@ class SystemTrayIcon:
         bbox = draw.textbbox((0, 0), text, font=font)
         tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
         x = (size - tw) // 2 - bbox[0]
-        y = (size - th) // 2 - bbox[1]
+        y = (size - th) // 2 - bbox[1] + 1  # 微调下偏
         draw.text((x, y), text, fill=color, font=font)
 
-        # 转换为 HICON（带 AND 掩码实现透明/圆角效果）
-        img_with_alpha = img.convert("RGBA")
-        # 创建圆角矩形蒙版
-        mask = Image.new("L", (size, size), 0)
-        mask_draw = ImageDraw.Draw(mask)
-        r = int(size * 0.18)  # 圆角半径
-        mask_draw.rounded_rectangle([(0, 0), (size-1, size-1)], radius=r, fill=255)
+        # --- 2. 创建 AND 掩码（1bpp，圆角矩形=不透明，其余透明）---
+        mask_img = Image.new("L", (size, size), 0)   # 0=黑=在AND掩码中表示"不透明"
+        md = ImageDraw.Draw(mask_img)
+        r = max(3, int(size * 0.20))
+        try:
+            md.rounded_rectangle([(1, 1), (size-2, size-2)], radius=r, fill=255)
+        except AttributeError:
+            md.rectangle([(1, 1), (size-2, size-2)], fill=255)
 
-        # 合成 RGBA
-        r, g, b = img_with_alpha.split()[:3]
-        a = mask
-        rgba = Image.merge("RGBA", (r, g, b, a))
-
-        # PIL → BMP → HICON
-        hicon = self._pil_to_hicon(rgba)
+        # --- 3. 转 HICON（24-bit 色图 + 1bpp 掩码，最兼容方式）---
+        hicon = self._pil_to_hicon_v2(img, mask_img)
         return hicon
 
     @staticmethod
-    def _pil_to_hicon(rgba_img):
-        """将 PIL RGBA 图像转为 Windows HICON 句柄（32-bit ARGB + 圆角）。"""
+    def _pil_to_hicon_v2(rgb_img, mask_img):
+        """将 PIL RGB 图像 + L 掩码转为 Windows HICON（24-bit DIB + 1bpp AND mask）。
+        这是创建图标的最经典、最兼容的方式——不依赖 ARGB alpha 通道。"""
         import ctypes
         from ctypes import wintypes
 
-        w, h = rgba_img.size
-        bgra = rgba_img.tobytes("raw", "BGRA")
+        w, h = rgb_img.size
+        # RGB 像素数据（BGR 格式，每行 4 字节对齐）
+        row_stride = (w * 3 + 3) & ~3  # 对齐到 4 字节
+        bgr_data = bytearray(row_stride * h)
+        pixels = rgb_img.tobytes("raw", "BGR")
+        for y in range(h):
+            bgr_data[y*row_stride:(y*row_stride)+w*3] = pixels[y*w*3:(y+1)*w*3]
 
-        class BITMAPV5HEADER(ctypes.Structure):
+        class BITMAPINFOHEADER(ctypes.Structure):
             _fields_ = [
-                ("bV5Size", wintypes.DWORD), ("bV5Width", wintypes.LONG),
-                ("bV5Height", wintypes.LONG), ("bV5Planes", wintypes.WORD),
-                ("bV5BitCount", wintypes.WORD), ("bV5Compression", wintypes.DWORD),
-                ("bV5SizeImage", wintypes.DWORD), ("bV5XPelsPerMeter", wintypes.LONG),
-                ("bV5YPelsPerMeter", wintypes.LONG), ("bV5ClrUsed", wintypes.DWORD),
-                ("bV5ClrImportant", wintypes.DWORD), ("bV5RedMask", wintypes.DWORD),
-                ("bV5GreenMask", wintypes.DWORD), ("bV5BlueMask", wintypes.DWORD),
-                ("bV5AlphaMask", wintypes.DWORD), ("bV5CSType", wintypes.DWORD),
-                ("bV5Endpoints", wintypes.BYTE * 36), ("bV5GammaRed", wintypes.DWORD),
-                ("bV5GammaGreen", wintypes.DWORD), ("bV5GammaBlue", wintypes.DWORD),
-                ("bV5Intent", wintypes.DWORD), ("bV5ProfileData", wintypes.DWORD),
-                ("bV5ProfileSize", wintypes.DWORD), ("bV5Reserved", wintypes.DWORD),
+                ("biSize", wintypes.DWORD),
+                ("biWidth", wintypes.LONG),
+                ("biHeight", wintypes.LONG),     # 正值=自底向上（图标标准）
+                ("biPlanes", wintypes.WORD),
+                ("biBitCount", wintypes.WORD),
+                ("biCompression", wintypes.DWORD),
+                ("biSizeImage", wintypes.DWORD),
+                ("biXPelsPerMeter", wintypes.LONG),
+                ("biYPelsPerMeter", wintypes.LONG),
+                ("biClrUsed", wintypes.DWORD),
+                ("biClrImportant", wintypes.DWORD),
             ]
 
-        hdr = BITMAPV5HEADER()
-        hdr.bV5Size = ctypes.sizeof(BITMAPV5HEADER)
-        hdr.bV5Width = w
-        hdr.bV5Height = -h          # top-down（负值）
-        hdr.bV5Planes = 1
-        hdr.bV5BitCount = 32
-        hdr.bV5Compression = 3     # BI_BITFIELDS (ARGB)
-        hdr.bV5AlphaMask = 0xFF000000
-        hdr.bV5RedMask   = 0x00FF0000
-        hdr.bV5GreenMask = 0x0000FF00
-        hdr.bV5BlueMask  = 0x000000FF
-        hdr.bV5SizeImage = w * h * 4
+        bmi = BITMAPINFOHEADER()
+        bmi.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+        bmi.biWidth = w
+        bmi.biHeight = h          # 正值：bottom-up DIB（图标色图标准）
+        bmi.biPlanes = 1
+        bmi.biBitCount = 24       # 24-bit RGB
+        bmi.biCompression = 0     # BI_RGB（无压缩）
+        bmi.biSizeImage = len(bgr_data)
 
         hdc = ctypes.windll.user32.GetDC(0)
         ppbits = ctypes.c_void_p()
         hbmp_color = ctypes.windll.gdi32.CreateDIBSection(
-            hdc, ctypes.byref(hdr), 0, ctypes.byref(ppbits), None, 0)
+            hdc, ctypes.byref(bmi), 0,
+            ctypes.byref(ppbits), None, 0)
         if not hbmp_color or not ppbits:
+            ctypes.windll.user32.ReleaseDC(0, hdc)
             return None
-        ctypes.memmove(ppbits, bgra, len(bgra))
+        ctypes.memmove(ppbits, bytes(bgr_data), len(bgr_data))
 
-        # AND 掩码（ARGB 模式下可为空位图）
-        hbmp_mask = ctypes.windll.gdi32.CreateBitmap(w, h, 1, 1, None)
+        # AND 掩码（1bpp，自底向上）
+        mask_row_stride = (w + 31) // 32 * 4  # 每行对齐到 4 字节
+        mask_bytes = bytearray(mask_row_stride * h)
+        mask_px = list(mask_img.getdata())
+        for y in range(h):
+            src_y = h - 1 - y  # 自底向上翻转
+            for x in range(w):
+                if mask_px[src_y * w + x] > 128:  # 掩码白色区域 → AND 掩码中设为 1（透明）
+                    byte_idx = y * mask_row_stride + (x // 8)
+                    bit_idx = 7 - (x % 8)
+                    mask_bytes[byte_idx] |= (1 << bit_idx)
+
+        hbmp_mask = ctypes.windll.gdi32.CreateBitmap(
+            w, h, 1, 1, bytes(mask_bytes))
 
         class ICONINFO(ctypes.Structure):
             _fields_ = [("fIcon", wintypes.BOOL), ("xHotspot", wintypes.DWORD),
                         ("yHotspot", wintypes.DWORD), ("hbmColor", wintypes.HBITMAP),
                         ("hbmMask", wintypes.HBITMAP)]
 
-        ii = ICONINFO(True, 0, 0, hbmp_color, hbmp_mask)
+        ii = ICONINFO(True, w//2, h//2, hbmp_color, hbmp_mask)
         hicon = ctypes.windll.user32.CreateIconIndirect(ctypes.byref(ii))
 
         # 清理 GDI 对象
@@ -379,6 +391,7 @@ class UWFApp:
         self.log_gen = 0
         self.settings_gen = 0
         self.rt_gen = 0
+        self.reg_gen = 0
         self._rendered = False
         self._pending_protect = {}   # 盘符 -> True(待生效保护)/False(待取消)
         # 实时写入监控状态
@@ -428,7 +441,7 @@ class UWFApp:
 
     # ==================== UI 布局 ====================
     def _setup_ui(self):
-        self.root.title("UWF Manager Pro v2.8")
+        self.root.title("UWF Manager Pro v2.9")
         self.root.geometry("1100x800")
         self.root.configure(bg=BG)
         self.root.minsize(900, 680)
@@ -449,7 +462,7 @@ class UWFApp:
         title_bar = tk.Frame(self.root, bg=ACCENT, height=48)
         title_bar.pack(fill=tk.X)
         title_bar.pack_propagate(False)
-        tk.Label(title_bar, text="UWF Manager Pro v2.7",
+        tk.Label(title_bar, text="UWF Manager Pro v2.9",
                  font=FONT_TITLE, fg="white", bg=ACCENT).pack(
             side=tk.LEFT, padx=18, pady=8)
         self.lbl_admin = tk.Label(title_bar, text="", font=FONT_BOLD,
@@ -540,6 +553,16 @@ class UWFApp:
         self.lbl_overlay_detail = tk.Label(inner, text="", font=FONT,
                                            fg=TEXT_SUB, bg=CARD_BG)
         self.lbl_overlay_detail.pack(anchor="w")
+
+        # --- 清理缓存按钮（覆盖层卡片内）---
+        cache_btn_row = tk.Frame(inner, bg=CARD_BG)
+        cache_btn_row.pack(fill=tk.X, pady=(6, 0))
+        self.btn_clean_cache = ttk.Button(cache_btn_row, text="🧹 清理缓存释放覆盖层",
+                                          command=self.on_clean_cache, width=24)
+        self.btn_clean_cache.pack(side=tk.LEFT)
+        self.lbl_cache_hint = tk.Label(cache_btn_row, text="清理临时文件/浏览器缓存等释放 UWF 空间",
+                                       font=("Segoe UI", 8), fg=TEXT_SUB, bg=CARD_BG)
+        self.lbl_cache_hint.pack(side=tk.LEFT, padx=8)
 
         # --- 受保护卷 ---
         inner = self._card(content, "受保护卷")
