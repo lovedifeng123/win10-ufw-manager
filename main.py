@@ -1,5 +1,5 @@
 """
-UWF Manager Pro v2.5 - 主程序（tkinter UI）
+UWF Manager Pro v2.6 - 主程序（tkinter UI）
 功能：
   1. 状态面板：启用/禁用/HORM/关机待处理
   2. 覆盖层内存监控（已用/总容量/阈值变色）← 修复数据显示
@@ -220,7 +220,7 @@ class UWFApp:
 
     # ==================== UI 布局 ====================
     def _setup_ui(self):
-        self.root.title("UWF Manager Pro v2.5")
+        self.root.title("UWF Manager Pro v2.6")
         self.root.geometry("1100x800")
         self.root.configure(bg=BG)
         self.root.minsize(900, 680)
@@ -241,7 +241,7 @@ class UWFApp:
         title_bar = tk.Frame(self.root, bg=ACCENT, height=48)
         title_bar.pack(fill=tk.X)
         title_bar.pack_propagate(False)
-        tk.Label(title_bar, text="UWF Manager Pro v2.5",
+        tk.Label(title_bar, text="UWF Manager Pro v2.6",
                  font=FONT_TITLE, fg="white", bg=ACCENT).pack(
             side=tk.LEFT, padx=18, pady=8)
         self.lbl_admin = tk.Label(title_bar, text="", font=FONT_BOLD,
@@ -338,7 +338,7 @@ class UWFApp:
         self.tree_vol.column("盘符", width=55)
         self.tree_vol.column("保护状态", width=90)
         self.tree_vol.column("覆盖占用", width=120)
-        self.tree_vol.column("会话", width=70)
+        self.tree_vol.column("重启后", width=70)
         self.tree_vol.column("提交待处理", width=85)
         self.tree_vol.pack(fill=tk.X, pady=4)
 
@@ -498,7 +498,7 @@ class UWFApp:
             self.tree_protect.heading(c, text=c)
         self.tree_protect.column("分区", width=60)
         self.tree_protect.column("当前状态", width=100)
-        self.tree_protect.column("生效", width=100)
+        self.tree_protect.column("重启后状态", width=100)
         self.tree_protect.pack(fill=tk.X, pady=4)
         # 右键菜单
         self.prot_menu = tk.Menu(self.root, tearoff=0)
@@ -1008,9 +1008,6 @@ class UWFApp:
 
     # ==================== 操作：启用/禁用 ====================
     def on_toggle(self):
-        if not self.admin:
-            messagebox.showwarning("权限不足", "请以管理员身份运行。")
-            return
         target = "禁用" if self.lbl_status.cget("text") == "已启用" else "启用"
 
         def op():
@@ -1033,10 +1030,6 @@ class UWFApp:
 
     # ==================== 操作：提交/重启/关机 ====================
     def on_commit_all(self):
-        if not self.admin:
-            messagebox.showwarning("权限不足", "请以管理员身份运行。")
-            return
-
         def op():
             c = uwf_core.UWFCore()
             c.connect()
@@ -1056,9 +1049,6 @@ class UWFApp:
         if not messagebox.askyesno("确认重启", "确定要立即重启计算机吗？\n"
                                     "UWF 设置变更将在重启后生效。"):
             return
-        if not self.admin:
-            messagebox.showwarning("权限不足", "请以管理员身份运行。")
-            return
 
         def op():
             c = uwf_core.UWFCore()
@@ -1076,9 +1066,6 @@ class UWFApp:
 
     def on_shutdown(self):
         if not messagebox.askyesno("确认关机", "确定要关闭计算机吗？"):
-            return
-        if not self.admin:
-            messagebox.showwarning("权限不足", "请以管理员身份运行。")
             return
 
         def op():
@@ -1101,9 +1088,6 @@ class UWFApp:
             messagebox.showwarning("不可编辑",
                 "UWF 当前为启用状态，基本设置需先禁用 UWF 才能修改。\n"
                 "请在「状态概览」中关闭写入过滤并重启后再设置。")
-            return
-        if not self.admin:
-            messagebox.showwarning("权限不足", "请以管理员身份运行。")
             return
         filter_val = self.var_filter.get()
         type_val = self.var_ovl_type.get()
@@ -1150,9 +1134,6 @@ class UWFApp:
                 "UWF 当前为启用状态，缓存设置需先禁用 UWF 才能修改。\n"
                 "请在「状态概览」中关闭写入过滤并重启后再设置。")
             return
-        if not self.admin:
-            messagebox.showwarning("权限不足", "请以管理员身份运行。")
-            return
         try:
             max_sz = int(self.ent_max_size.get())
             warn = int(self.ent_warn.get())
@@ -1186,9 +1167,6 @@ class UWFApp:
         self._do_protect_op(drive_letter, False)
 
     def _do_protect_op(self, drive_letter, protect):
-        if not self.admin:
-            messagebox.showwarning("权限不足", "请以管理员身份运行。")
-            return
         action = "保护" if protect else "取消保护"
 
         def op():
@@ -1201,8 +1179,6 @@ class UWFApp:
             return f"{drive_letter} → {action}"
 
         def done(msg):
-            # 记录待生效状态，重启后由 _update_protect_table 自动消除
-            self._pending_protect[drive_letter] = protect
             messagebox.showinfo(
                 "成功", f"{msg}\n重启后生效。\n"
                         f"可在「状态概览」点「重启系统」使其立即生效。")
@@ -1235,9 +1211,6 @@ class UWFApp:
 
     # ==================== 操作：排除列表 ====================
     def on_add_exclusion(self):
-        if not self.admin:
-            messagebox.showwarning("权限不足", "请以管理员身份运行。")
-            return
         drive = self.var_exc_drive.get().rstrip(":") + ":"
         path = self.ent_exc_path.get().strip()
         if not path:
@@ -1260,9 +1233,6 @@ class UWFApp:
         self._run_com("settings_gen", op, done, fail)
 
     def on_clear_exclusions(self):
-        if not self.admin:
-            messagebox.showwarning("权限不足", "请以管理员身份运行。")
-            return
         if not messagebox.askyesno("确认", "确定要清除所有排除项吗？"):
             return
         drive = self.var_exc_drive.get().rstrip(":") + ":"
@@ -1288,9 +1258,6 @@ class UWFApp:
             return
         vals = self.tree_exc.item(sel[0], "values")
         drive, path = vals[0], vals[1]
-        if not self.admin:
-            messagebox.showwarning("权限不足", "请以管理员身份运行。")
-            return
 
         def op():
             c = uwf_core.UWFCore()
@@ -1590,9 +1557,6 @@ class UWFApp:
         self._copy_selected_path(self.tree_file, col=0)
 
     def on_commit_delete(self):
-        if not self.admin:
-            messagebox.showwarning("权限不足", "请以管理员身份运行。")
-            return
         sel = self.tree_file.selection()
         if not sel:
             return
@@ -1639,9 +1603,6 @@ class UWFApp:
         self._copy_selected_path(self.tree_log, col=1)
 
     def on_commit_log_delete(self):
-        if not self.admin:
-            messagebox.showwarning("权限不足", "请以管理员身份运行。")
-            return
         sel = self.tree_log.selection()
         if not sel:
             return

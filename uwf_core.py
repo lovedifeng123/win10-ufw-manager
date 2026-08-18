@@ -10,29 +10,48 @@ UWF Manager Pro - 核心模块（CLI + WMI 混合实现）
 支持的 WMI 类：
   UWF_Filter / UWF_Volume / UWF_Overlay / UWF_OverlayConfig
 """
+import os
+import sys
+import time
+import tempfile
 import subprocess
+import ctypes
+import win32api
+import win32con
+import win32event
 import win32com.client
 
-UWFMGR = r"C:\Windows\System32\uwfmgr.exe"
+UWFMGR = None  # 延迟解析，绕过 32 位进程 System32 重定向
 
 
-class UWFError(Exception):
-    """UWF 相关异常基类"""
-    pass
+def _resolve_uwfmgr():
+    candidates = [
+        r"C:\Windows\System32\uwfmgr.exe",
+        r"C:\Windows\Sysnative\uwfmgr.exe",
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            return p
+    return candidates[0]
 
 
-class UWFNotSupported(UWFError):
-    """当前系统不支持 UWF（通常因为没有 embedded 命名空间）"""
-    pass
-
-
-# ==================== uwfmgr.exe 封装 ====================
-
-def _run_cli(args):
-    """调用 uwfmgr.exe，返回 (returncode, stdout_text, stderr_text)。"""
+def _is_admin():
+    """当前进程是否以管理员权限运行。"""
     try:
-        proc = subprocess.run([UWFMGR] + list(args),
-                               capture_output=True, timeout=90)
+        return ctypes.windll.shell32.IsUserAnAdmin() != 0
+    except Exception:
+        return False
+
+
+def _run_direct(args):
+    """已提权（或无需提权）时直接调用 uwfmgr.exe。"""
+    global UWFMGR
+    if UWFMGR is None:
+        UWFMGR = _resolve_uwfmgr()
+    try:
+        proc = subprocess.run([UWFMGR] + [str(a) for a in args],
+                              capture_output=True, timeout=120,
+                              shell=False)
     except FileNotFoundError:
         raise UWFError("找不到 uwfmgr.exe，请确认系统已启用 UWF 功能。")
     except subprocess.TimeoutExpired:
@@ -44,12 +63,57 @@ def _run_cli(args):
     return proc.returncode, out, err
 
 
+def _run_elevated(args):
+    """非管理员时，通过 UAC(runas) 提权执行 uwfmgr.exe。
+
+    uwfmgr.exe 自带 requireAdministrator 清单，runas 会弹出 UAC 请求；
+    用户同意后以管理员身份执行写操作。返回空输出，由调用方重新读取
+    WMI 状态来确认结果。
+    """
+    global UWFMGR
+    if UWFMGR is None:
+        UWFMGR = _resolve_uwfmgr()
+    params = " ".join(
+        f'"{a}"' if (" " in str(a) or "\t" in str(a)) else str(a)
+        for a in args)
+    try:
+        info = win32api.ShellExecuteEx(
+            fMask=win32con.SEE_MASK_NOCLOSEPROCESS,
+            hwnd=0,
+            lpVerb="runas",
+            lpFile=UWFMGR,
+            lpParameters=params,
+            nShow=1,
+        )
+    except Exception as e:
+        raise UWFError(f"无法请求管理员权限：{e}")
+    hproc = info.get("hProcess")
+    if not hproc:
+        # 用户拒绝了 UAC 授权
+        raise UWFError("已取消管理员授权（UAC 被拒绝），操作未执行。")
+    try:
+        win32event.WaitForSingleObject(hproc, 20000)
+    except Exception:
+        pass
+    return 0, "", ""
+
+
 def _cli(args):
-    """调用 uwfmgr.exe，成功返回 stdout 文本，失败抛 UWFError。"""
-    rc, out, err = _run_cli(args)
+    """调用 uwfmgr.exe，成功返回 stdout 文本，失败抛 UWFError。
+
+    若当前非管理员，自动通过 UAC 提权执行（仅写操作需要，弹一次 UAC）。
+    """
+    if _is_admin():
+        rc, out, err = _run_direct(args)
+    else:
+        rc, out, err = _run_elevated(args)
     if rc != 0:
         msg = (err or out).strip() or f"uwfmgr 返回码 {rc}"
-        raise UWFError(f"操作失败 [{ ' '.join(args) }]: {msg}")
+        raise UWFError(f"操作失败 [{ ' '.join(map(str, args)) }]: {msg}")
+    combined = (out + err)
+    if "失败" in combined or "拒绝访问" in combined or "拒绝" in combined:
+        raise UWFError(
+            f"操作失败 [{ ' '.join(map(str, args)) }]: {combined.strip()}")
     return out
 
 
@@ -230,8 +294,8 @@ class UWFCore:
     # ==================== 覆盖配置（CLI）====================
 
     def set_overlay_type(self, overlay_type):
-        """0=基于内存(RAM), 1=基于磁盘(Disk)。"""
-        kind = "RAM" if int(overlay_type) == 0 else "Disk"
+        """0=基于内存(RAM), 1=基于磁盘(DISK)。"""
+        kind = "RAM" if int(overlay_type) == 0 else "DISK"
         _cli(["overlay", "set-type", kind])
         return True
 

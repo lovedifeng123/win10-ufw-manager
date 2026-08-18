@@ -34,6 +34,11 @@ Microsoft only ships the `uwfmgr.exe` command line — **no GUI**. This tool is 
 
 ## 📌 更新日志 / Changelog
 
+### v2.6 (2026-08-18)
+- 🐛 **修复启动即崩（关键）** — 修复 `Treeview.column("会话")` / `column("生效")` 的 `TclError: Invalid column index`（列定义与 column ID 不一致导致一打开就崩溃）。
+- ✅ **无需管理员启动** — 改回 `asInvoker`（启动不弹 UAC）；写操作通过 `ShellExecuteEx(runas)` **按需自动提权**（仅在该操作时弹一次 UAC），和参考软件 `UWFPRO` 行为一致：普通用户可打开浏览，写操作时才请求授权。
+- 🧹 **清除所有 admin 门卫** — 移除全部 11 处 `if not self.admin:` 拦截（开启/关闭保护、关机保护、提交删除、排除项、缓存设置、分区保护等），所有操作均走按需提权。
+
 ### v2.5 (2026-08-18)
 - 🔔 **托盘显示剩余内存** — 右下角托盘 tooltip 实时显示「UWF 状态 + 剩余内存 X MB（已用 Y MB）」，不再只显示一个盾牌图标。
 - 🛡 **内嵌管理员清单（关键修复）** — 打包时嵌入 `requireAdministrator` 清单，软件启动即自动提权（与参考软件 `UWF管理器.exe` 行为一致）。此前的 `asInvoker` 导致 `uwfmgr` 写入静默失败，正是“分区保护/开启保护根本无效”的根因。
@@ -53,17 +58,17 @@ Microsoft only ships the `uwfmgr.exe` command line — **no GUI**. This tool is 
 ## 📋 系统要求 / Requirements
 
 - Windows 10 / 11 **企业版 / 教育版 / IoT 企业版**（需支持 UWF 功能）。
-- 必须以**管理员身份**运行。
+- **普通用户即可启动浏览**；写操作（保护/排除/设置变更等）会**自动弹出 UAC 请求管理员授权**。
 - UWF 依赖特定过滤驱动，通常与 Hyper-V 等存在共存限制，请确认环境支持。
-- **English**: Windows 10/11 **Enterprise / Education / IoT Enterprise** with the UWF feature enabled; must be run **as Administrator**.
+- **English**: Windows 10/11 **Enterprise / Education / IoT Enterprise** with the UWF feature enabled; **launch as normal user** — write operations auto-elevate via UAC on demand.
 
 ---
 
 ## 🚀 快速使用 / Quick Start
 
 1. 前往 [Releases](../../releases) 下载 `UWF Manager Pro.exe`。
-2. **右键 → 以管理员身份运行**。
-3. 首次打开会自动检测 UWF 状态并加载数据。
+2. **双击直接运行**（无需右键管理员）。
+3. 首次打开会自动检测 UWF 状态并加载数据；执行写操作时会自动弹出 UAC 授权。
 
 ---
 
@@ -72,18 +77,17 @@ Microsoft only ships the `uwfmgr.exe` command line — **no GUI**. This tool is 
 ```bash
 pip install -r requirements.txt
 
-# 仓库已提供带管理员清单的 spec，直接用它构建（自动以管理员身份运行）：
 pyinstaller "UWF Manager Pro.spec"
 
-# 或手动指定（需附加 --uac-admin 以嵌入管理员清单）：
-pyinstaller --onefile --windowed --uac-admin --name "UWF Manager Pro" ^
+# 或手动指定（无需 --uac-admin，启动不弹 UAC，写操作按需提权）：
+pyinstaller --onefile --windowed --name "UWF Manager Pro" ^
   --add-data "uwf_core.py;." ^
   --add-data "file_scan.py;." ^
   --add-data "overlay_monitor.py;." ^
   main.py
 ```
 
-生成的单文件 exe 位于 `dist/UWF Manager Pro.exe`（已内嵌 `requireAdministrator` 清单，启动即自动提权）。
+生成的单文件 exe 位于 `dist/UWF Manager Pro.exe`（`asInvoker` 清单，普通用户可启动；写操作自动 UAC 提权）。
 
 > 说明：WMI 的 `GetOverlayFiles` 在部分环境枚举量过大时会挂起，故实时监控改用 `ReadDirectoryChangesW` 文件系统监听（UWF 下所有系统盘写入都落在覆盖层，等价于监控“写进了内存的文件”）。
 
