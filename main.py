@@ -186,120 +186,61 @@ class SystemTrayIcon:
             pass
 
     def _create_hicon_from_text(self, text, warn=False):
-        """用纯 GDI 在位图上绘制数字文字生成 HICON（不依赖 PIL）。
-        方案：CreateCompatibleBitmap → FillRect(背景) → CreateFontW+DrawTextW(文字) → CreateIconIndirect"""
+        """用 PIL 生成 .ico 文件 → LoadImageW 从文件加载 HICON（最可靠的 Windows 图标加载方式）。
+        经过 v2.8(ARGB黑块)/v2.9(AND mask白块)/v2.10(GDI黑块) 三次失败后，
+        确认唯一可靠方案是：PIL 生成标准 .ico 文件 → Windows LoadImageW 加载。"""
+        from PIL import Image, ImageDraw, ImageFont
         import ctypes
-        from ctypes import wintypes
+        import win32con
 
         size = self.ICON_SIZE  # 64x64
         bg = self.ICON_BG       # (45,45,45) 深灰
         fg = self.ICON_FG_WARN if warn else self.ICON_FG_NORMAL  # 金黄 or 红
 
-        hdc_screen = ctypes.windll.user32.GetDC(0)
+        # --- 1. PIL 渲染文字到 RGB 图像 ---
+        img = Image.new("RGB", (size, size), bg)
+        draw = ImageDraw.Draw(img)
 
-        # --- 1. 创建内存 DC 和 32-bit DIB 位图 ---
-        class BITMAPV5HEADER(ctypes.Structure):
-            _fields_ = [
-                ("bV5Size", wintypes.DWORD), ("bV5Width", wintypes.LONG),
-                ("bV5Height", wintypes.LONG), ("bV5Planes", wintypes.WORD),
-                ("bV5BitCount", wintypes.WORD), ("bV5Compression", wintypes.DWORD),
-                ("bV5SizeImage", wintypes.DWORD), ("bV5XPelsPerMeter", wintypes.LONG),
-                ("bV5YPelsPerMeter", wintypes.LONG), ("bV5ClrUsed", wintypes.DWORD),
-                ("bV5ClrImportant", wintypes.DWORD),
-                ("bV5RedMask", wintypes.DWORD), ("bV5GreenMask", wintypes.DWORD),
-                ("bV5BlueMask", wintypes.DWORD), ("bV5AlphaMask", wintypes.DWORD),
-                ("bV5CSType", wintypes.DWORD),
-                ("bV5Endpoints", ctypes.c_byte * 36),
-                ("bV5GammaRed", wintypes.DWORD), ("bV5GammaGreen", wintypes.DWORD),
-                ("bV5GammaBlue", wintypes.DWORD),
-                ("bV5Intent", wintypes.DWORD), ("bV5ProfileData", wintypes.DWORD),
-                ("bV5ProfileSize", wintypes.DWORD), ("bV5Reserved", wintypes.DWORD),
-            ]
-
-        hdr = BITMAPV5HEADER()
-        hdr.bV5Size = ctypes.sizeof(BITMAPV5HEADER)
-        hdr.bV5Width = size
-        hdr.bV5Height = -size          # top-down 负值
-        hdr.bV5Planes = 1
-        hdr.bV5BitCount = 32           # 32-bit BGRA
-        hdr.bV5Compression = 3         # BI_BITFIELDS (BGRA)
-        hdr.bV5AlphaMask = 0x00000000  # 不用 alpha（全不透明）
-        hdr.bV5RedMask   = 0x00FF0000
-        hdr.bV5GreenMask = 0x0000FF00
-        hdr.bV5BlueMask  = 0x000000FF
-        hdr.bV5SizeImage = size * size * 4
-
-        ppbits = ctypes.c_void_p()
-        hbmp_color = ctypes.windll.gdi32.CreateDIBSection(
-            hdc_screen, ctypes.byref(hdr), 0, ctypes.byref(ppbits), None, 0)
-        if not hbmp_color or not ppbits:
-            ctypes.windll.user32.ReleaseDC(0, hdc_screen)
-            return None
-
-        # --- 2. 用 GDI 绘制背景和文字 ---
-        hdc_mem = ctypes.windll.gdi32.CreateCompatibleDC(hdc_screen)
-        ctypes.windll.gdi32.SelectObject(hdc_mem, hbmp_color)
-
-        # 填充背景色（深灰）
-        brush = ctypes.windll.gdi32.CreateSolidBrush(
-            (bg[2] << 16) | (bg[1] << 8) | bg[0])  # RGB → COLORREF (BBGGRR)
-        class RECT(ctypes.Structure):
-            _fields_ = [("left", wintypes.LONG), ("top", wintypes.LONG),
-                        ("right", wintypes.LONG), ("bottom", wintypes.LONG)]
-        rect = RECT(0, 0, size, size)
-        ctypes.windll.user32.FillRect(hdc_mem, ctypes.byref(rect), brush)
-        ctypes.windll.gdi32.DeleteObject(brush)
-
-        # 创建字体（Arial Bold，大小自适应）
-        font_size = int(size * 0.55)  # 64*0.55 ≈ 35pt
-        hfont = ctypes.windll.gdi32.CreateFontW(
-            -font_size, 0, 0, 0, 700,  # height(negative=pt), width, escapement, orientation, weight(bold)
-            0, 0, 0, 0,                 # italic, underline, strikeout, charset(ANSI=0)
-            3, 2, 1,                    # output precision, clip precision, quality(ANTIALIASED=3/CLEARTYPE=5)
-            "Arial")                    # face name
-        ctypes.windll.gdi32.SelectObject(hdc_mem, hfont)
-
-        # 设置文字颜色（金黄/红）
-        ctypes.windll.gdi32.SetTextColor(
-            hdc_mem, (fg[2] << 16) | (fg[1] << 8) | fg[0])
-        ctypes.windll.gdi32.SetBkMode(hdc_mem, 1)  # TRANSPARENT
+        # 加载字体
+        font = None
+        for font_name in ("C:/Windows/Fonts/arial.ttf",
+                          "C:/Windows/Fonts/segoeui.ttf",
+                          "C:/Windows/Fonts/tahoma.ttf"):
+            try:
+                font = ImageFont.truetype(font_name, int(size * 0.50))
+                break
+            except Exception:
+                continue
+        if font is None:
+            font = ImageFont.load_default()
 
         # 居中绘制文字
-        class SIZE(ctypes.Structure):
-            _fields_ = [("cx", wintypes.LONG), ("cy", wintypes.LONG)]
-        sz = SIZE()
-        ctypes.windll.gdi32.GetTextExtentPoint32W(
-            hdc_mem, text, len(text), ctypes.byref(sz))
-        x = max(0, (size - sz.cx) // 2)
-        y = max(0, (size - sz.cy) // 2) - 2
-        ctypes.windll.gdi32.TextOutW(hdc_mem, x, y, text, len(text))
+        bbox = draw.textbbox((0, 0), text, font=font)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        x = (size - tw) // 2 - bbox[0]
+        y = (size - th) // 2 - bbox[1]
+        draw.text((x, y), text, fill=fg, font=font)
 
-        # 清理 DC 和字体
-        ctypes.windll.gdi32.SelectObject(hdc_mem,
-            ctypes.windll.gdi32.GetCurrentObject(hdc_mem, 6))  # OBJ_FONT=6
-        ctypes.windll.gdi32.DeleteObject(hfont)
-        ctypes.windll.gdi32.DeleteDC(hdc_mem)
+        # --- 2. 保存为临时 .ico 文件 ---
+        import tempfile
+        import os
+        import sys
+        # PyInstaller --onefile 环境下用系统临时目录，开发环境用源码目录
+        if getattr(sys, 'frozen', False):
+            base_dir = os.path.dirname(sys.executable)
+        else:
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+        ico_dir = os.path.join(base_dir, ".icon_cache")
+        os.makedirs(ico_dir, exist_ok=True)
+        ico_path = os.path.join(ico_dir,
+            f"tray_{'w' if warn else 'n'}_{text.replace('.','p')}.ico")
+        img.save(ico_path, format="ICO", sizes=[(size, size)])
 
-        # --- 3. AND 掩码：全 0 = 所有像素都不透明 ---
-        mask_row_stride = (size + 31) // 32 * 4
-        mask_bytes = b'\x00' * (mask_row_stride * size)
-        hbmp_mask = ctypes.windll.gdi32.CreateBitmap(
-            size, size, 1, 1, mask_bytes)
-
-        # --- 4. 创建图标 ---
-        class ICONINFO(ctypes.Structure):
-            _fields_ = [
-                ("fIcon", wintypes.BOOL), ("xHotspot", wintypes.DWORD),
-                ("yHotspot", wintypes.DWORD), ("hbmColor", wintypes.HBITMAP),
-                ("hbmMask", wintypes.HBITMAP)]
-
-        ii = ICONINFO(True, size // 2, size // 2, hbmp_color, hbmp_mask)
-        hicon = ctypes.windll.user32.CreateIconIndirect(ctypes.byref(ii))
-
-        # 清理 GDI 对象
-        ctypes.windll.gdi32.DeleteObject(hbmp_color)
-        ctypes.windll.gdi32.DeleteObject(hbmp_mask)
-        ctypes.windll.user32.ReleaseDC(0, hdc_screen)
+        # --- 3. 用 LoadImageW 从文件加载（Windows 最可靠的图标加载方式）---
+        hicon = ctypes.windll.user32.LoadImageW(
+            None, ico_path,
+            win32con.IMAGE_ICON, size, size,
+            win32con.LR_LOADFROMFILE)
         return hicon
 
     def show_balloon(self, title, message, warn=False):

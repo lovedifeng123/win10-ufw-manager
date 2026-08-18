@@ -14,6 +14,7 @@ buildenv/
 *.log
 uwf_check.log
 _thumbs/
+.icon_cache/
 
 # ---- OS ----
 Thumbs.db
