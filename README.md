@@ -104,6 +104,22 @@ uwfmgr.exe
 
 ## Changelog / 更新日志
 
+### v2.10 (2026-08-19)
+- **🔧 Tray Icon Fully Rewritten (Pure GDI)** — Abandoned PIL/Pillow completely. Now uses pure Windows GDI API: `CreateDIBSection`(32-bit BGRA) → `CreateFontW`(Arial Bold) → `TextOutW` → `CreateIconIndirect`. Fixes black-square (v2.8) and white-square (v2.9) bugs permanently. Icon shows golden numbers on dark gray background reliably.
+  **🔧 托盘图标彻底重写（纯 GDI）** — 完全放弃 PIL/Pillow。改用纯 Windows GDI API 绘制：CreateDIBSection(32-bit BGRA) → CreateFontW(Arial Bold) → TextOutW → CreateIconIndirect。永久修复黑块(v2.8)和白块(v2.9)问题。图标可靠显示深灰底+金黄数字。
+- **✨ UWF Setup Guide Card** — Auto-detects if UWF is installed; shows bilingual guide card at top of Status tab when not installed. Two options: one-click DISM auto-enable OR open Windows Features panel. Full EN/CN bilingual UI.
+  **✨ UWF 引导开启卡片** — 自动检测 UWF 是否已安装；未安装时在状态面板顶部显示中英双语引导卡片。两个选项：一键 DISM 自动启用 或 打开 Windows 功能面板。全双语界面。
+- **📉 40% Smaller Exe** — Removed Pillow dependency; exe size reduced from ~20MB to ~12MB.
+  **📉 体积缩小 40%** — 移除 Pillow 依赖；exe 从 ~20MB 降到 ~12MB。
+
+### v2.9 (2026-08-18)
+- **🔧 Fix: Tray Icon Black Square Attempt** — Rewrote icon engine to 24-bit RGB DIB + 1bpp AND mask (classic compatible format). Still had issues on some systems; superseded by v2.10 pure GDI approach.
+  **🔧 修复托盘图标黑块尝试** — 重写为 24-bit RGB DIB + 1bpp AND mask（经典兼容格式）。部分系统仍有问题；已被 v2.10 纯 GDI 方案取代。
+- **🧹 Cache Cleanup Button on Main UI** — Added "Clean Cache to Free Overlay" button in Tab1 status panel, below overlay memory bar.
+  **🧹 主界面清理缓存按钮** — 在状态面板覆盖层内存条下方添加「清理缓存释放覆盖层」按钮。
+- **🐛 Fix: reg_gen Crash** — Fixed AttributeError for missing `reg_gen` attribute.
+  **🐛 修复 reg_gen 崩溃** — 补全缺失的 reg_gen 属性。
+
 ### v2.8 (2026-08-18)
 - **Dynamic Number Tray Icon** — Tray icon now shows **real-time remaining overlay memory** (e.g., `3.2G` / `850M`) with dark background + golden numbers (dashboard style). Auto-turns red when remaining < 20%. Uses PIL/Pillow ARGB 32-bit icons via Windows `CreateDIBSection`.
   **动态数字托盘图标** — 实时显示剩余覆盖层内存（如 `3.2G` / `850M`），深灰底+金黄数字（仪表盘风格）。剩余 < 20% 时变红警示。使用 Pillow ARGB 图标通过 CreateDIBSection 注入托盘。
