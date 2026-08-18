@@ -1,5 +1,5 @@
 """
-UWF Manager Pro v2.8 - 主程序（tkinter UI）
+UWF Manager Pro v2.10 - 主程序（tkinter UI）
 功能：
   1. 状态面板：启用/禁用/HORM/关机待处理
   2. 覆盖层内存监控（已用/总容量/阈值变色）← 修复数据显示
@@ -186,127 +186,120 @@ class SystemTrayIcon:
             pass
 
     def _create_hicon_from_text(self, text, warn=False):
-        """用 PIL 生成 HICON：深色底 + 数字文字（经典 24-bit DIB + AND mask 方式）。"""
-        from PIL import Image, ImageDraw, ImageFont
-        import struct
-
-        size = self.ICON_SIZE
-        # --- 1. PIL 渲染文字到 RGB 图像 ---
-        img = Image.new("RGB", (size, size), self.ICON_BG)
-        draw = ImageDraw.Draw(img)
-
-        # 加载字体（优先 Windows 系统字体）
-        font = None
-        for font_name in ("C:/Windows/Fonts/arial.ttf",
-                          "C:/Windows/Fonts/segoeui.ttf",
-                          "C:/Windows/Fonts/tahoma.ttf",
-                          "arial.ttf", "segoeui.ttf"):
-            try:
-                font = ImageFont.truetype(font_name, int(size * 0.50))
-                break
-            except Exception:
-                continue
-        if font is None:
-            font = ImageFont.load_default()
-
-        color = self.ICON_FG_WARN if warn else self.ICON_FG_NORMAL
-
-        # 居中绘制文字
-        bbox = draw.textbbox((0, 0), text, font=font)
-        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        x = (size - tw) // 2 - bbox[0]
-        y = (size - th) // 2 - bbox[1] + 1  # 微调下偏
-        draw.text((x, y), text, fill=color, font=font)
-
-        # --- 2. 创建 AND 掩码（1bpp，圆角矩形=不透明，其余透明）---
-        mask_img = Image.new("L", (size, size), 0)   # 0=黑=在AND掩码中表示"不透明"
-        md = ImageDraw.Draw(mask_img)
-        r = max(3, int(size * 0.20))
-        try:
-            md.rounded_rectangle([(1, 1), (size-2, size-2)], radius=r, fill=255)
-        except AttributeError:
-            md.rectangle([(1, 1), (size-2, size-2)], fill=255)
-
-        # --- 3. 转 HICON（24-bit 色图 + 1bpp 掩码，最兼容方式）---
-        hicon = self._pil_to_hicon_v2(img, mask_img)
-        return hicon
-
-    @staticmethod
-    def _pil_to_hicon_v2(rgb_img, mask_img):
-        """将 PIL RGB 图像 + L 掩码转为 Windows HICON（24-bit DIB + 1bpp AND mask）。
-        这是创建图标的最经典、最兼容的方式——不依赖 ARGB alpha 通道。"""
+        """用纯 GDI 在位图上绘制数字文字生成 HICON（不依赖 PIL）。
+        方案：CreateCompatibleBitmap → FillRect(背景) → CreateFontW+DrawTextW(文字) → CreateIconIndirect"""
         import ctypes
         from ctypes import wintypes
 
-        w, h = rgb_img.size
-        # RGB 像素数据（BGR 格式，每行 4 字节对齐）
-        row_stride = (w * 3 + 3) & ~3  # 对齐到 4 字节
-        bgr_data = bytearray(row_stride * h)
-        pixels = rgb_img.tobytes("raw", "BGR")
-        for y in range(h):
-            bgr_data[y*row_stride:(y*row_stride)+w*3] = pixels[y*w*3:(y+1)*w*3]
+        size = self.ICON_SIZE  # 64x64
+        bg = self.ICON_BG       # (45,45,45) 深灰
+        fg = self.ICON_FG_WARN if warn else self.ICON_FG_NORMAL  # 金黄 or 红
 
-        class BITMAPINFOHEADER(ctypes.Structure):
+        hdc_screen = ctypes.windll.user32.GetDC(0)
+
+        # --- 1. 创建内存 DC 和 32-bit DIB 位图 ---
+        class BITMAPV5HEADER(ctypes.Structure):
             _fields_ = [
-                ("biSize", wintypes.DWORD),
-                ("biWidth", wintypes.LONG),
-                ("biHeight", wintypes.LONG),     # 正值=自底向上（图标标准）
-                ("biPlanes", wintypes.WORD),
-                ("biBitCount", wintypes.WORD),
-                ("biCompression", wintypes.DWORD),
-                ("biSizeImage", wintypes.DWORD),
-                ("biXPelsPerMeter", wintypes.LONG),
-                ("biYPelsPerMeter", wintypes.LONG),
-                ("biClrUsed", wintypes.DWORD),
-                ("biClrImportant", wintypes.DWORD),
+                ("bV5Size", wintypes.DWORD), ("bV5Width", wintypes.LONG),
+                ("bV5Height", wintypes.LONG), ("bV5Planes", wintypes.WORD),
+                ("bV5BitCount", wintypes.WORD), ("bV5Compression", wintypes.DWORD),
+                ("bV5SizeImage", wintypes.DWORD), ("bV5XPelsPerMeter", wintypes.LONG),
+                ("bV5YPelsPerMeter", wintypes.LONG), ("bV5ClrUsed", wintypes.DWORD),
+                ("bV5ClrImportant", wintypes.DWORD),
+                ("bV5RedMask", wintypes.DWORD), ("bV5GreenMask", wintypes.DWORD),
+                ("bV5BlueMask", wintypes.DWORD), ("bV5AlphaMask", wintypes.DWORD),
+                ("bV5CSType", wintypes.DWORD),
+                ("bV5Endpoints", ctypes.c_byte * 36),
+                ("bV5GammaRed", wintypes.DWORD), ("bV5GammaGreen", wintypes.DWORD),
+                ("bV5GammaBlue", wintypes.DWORD),
+                ("bV5Intent", wintypes.DWORD), ("bV5ProfileData", wintypes.DWORD),
+                ("bV5ProfileSize", wintypes.DWORD), ("bV5Reserved", wintypes.DWORD),
             ]
 
-        bmi = BITMAPINFOHEADER()
-        bmi.biSize = ctypes.sizeof(BITMAPINFOHEADER)
-        bmi.biWidth = w
-        bmi.biHeight = h          # 正值：bottom-up DIB（图标色图标准）
-        bmi.biPlanes = 1
-        bmi.biBitCount = 24       # 24-bit RGB
-        bmi.biCompression = 0     # BI_RGB（无压缩）
-        bmi.biSizeImage = len(bgr_data)
+        hdr = BITMAPV5HEADER()
+        hdr.bV5Size = ctypes.sizeof(BITMAPV5HEADER)
+        hdr.bV5Width = size
+        hdr.bV5Height = -size          # top-down 负值
+        hdr.bV5Planes = 1
+        hdr.bV5BitCount = 32           # 32-bit BGRA
+        hdr.bV5Compression = 3         # BI_BITFIELDS (BGRA)
+        hdr.bV5AlphaMask = 0x00000000  # 不用 alpha（全不透明）
+        hdr.bV5RedMask   = 0x00FF0000
+        hdr.bV5GreenMask = 0x0000FF00
+        hdr.bV5BlueMask  = 0x000000FF
+        hdr.bV5SizeImage = size * size * 4
 
-        hdc = ctypes.windll.user32.GetDC(0)
         ppbits = ctypes.c_void_p()
         hbmp_color = ctypes.windll.gdi32.CreateDIBSection(
-            hdc, ctypes.byref(bmi), 0,
-            ctypes.byref(ppbits), None, 0)
+            hdc_screen, ctypes.byref(hdr), 0, ctypes.byref(ppbits), None, 0)
         if not hbmp_color or not ppbits:
-            ctypes.windll.user32.ReleaseDC(0, hdc)
+            ctypes.windll.user32.ReleaseDC(0, hdc_screen)
             return None
-        ctypes.memmove(ppbits, bytes(bgr_data), len(bgr_data))
 
-        # AND 掩码（1bpp，自底向上）
-        mask_row_stride = (w + 31) // 32 * 4  # 每行对齐到 4 字节
-        mask_bytes = bytearray(mask_row_stride * h)
-        mask_px = list(mask_img.getdata())
-        for y in range(h):
-            src_y = h - 1 - y  # 自底向上翻转
-            for x in range(w):
-                if mask_px[src_y * w + x] > 128:  # 掩码白色区域 → AND 掩码中设为 1（透明）
-                    byte_idx = y * mask_row_stride + (x // 8)
-                    bit_idx = 7 - (x % 8)
-                    mask_bytes[byte_idx] |= (1 << bit_idx)
+        # --- 2. 用 GDI 绘制背景和文字 ---
+        hdc_mem = ctypes.windll.gdi32.CreateCompatibleDC(hdc_screen)
+        ctypes.windll.gdi32.SelectObject(hdc_mem, hbmp_color)
 
+        # 填充背景色（深灰）
+        brush = ctypes.windll.gdi32.CreateSolidBrush(
+            (bg[2] << 16) | (bg[1] << 8) | bg[0])  # RGB → COLORREF (BBGGRR)
+        class RECT(ctypes.Structure):
+            _fields_ = [("left", wintypes.LONG), ("top", wintypes.LONG),
+                        ("right", wintypes.LONG), ("bottom", wintypes.LONG)]
+        rect = RECT(0, 0, size, size)
+        ctypes.windll.user32.FillRect(hdc_mem, ctypes.byref(rect), brush)
+        ctypes.windll.gdi32.DeleteObject(brush)
+
+        # 创建字体（Arial Bold，大小自适应）
+        font_size = int(size * 0.55)  # 64*0.55 ≈ 35pt
+        hfont = ctypes.windll.gdi32.CreateFontW(
+            -font_size, 0, 0, 0, 700,  # height(negative=pt), width, escapement, orientation, weight(bold)
+            0, 0, 0, 0,                 # italic, underline, strikeout, charset(ANSI=0)
+            3, 2, 1,                    # output precision, clip precision, quality(ANTIALIASED=3/CLEARTYPE=5)
+            "Arial")                    # face name
+        ctypes.windll.gdi32.SelectObject(hdc_mem, hfont)
+
+        # 设置文字颜色（金黄/红）
+        ctypes.windll.gdi32.SetTextColor(
+            hdc_mem, (fg[2] << 16) | (fg[1] << 8) | fg[0])
+        ctypes.windll.gdi32.SetBkMode(hdc_mem, 1)  # TRANSPARENT
+
+        # 居中绘制文字
+        class SIZE(ctypes.Structure):
+            _fields_ = [("cx", wintypes.LONG), ("cy", wintypes.LONG)]
+        sz = SIZE()
+        ctypes.windll.gdi32.GetTextExtentPoint32W(
+            hdc_mem, text, len(text), ctypes.byref(sz))
+        x = max(0, (size - sz.cx) // 2)
+        y = max(0, (size - sz.cy) // 2) - 2
+        ctypes.windll.gdi32.TextOutW(hdc_mem, x, y, text, len(text))
+
+        # 清理 DC 和字体
+        ctypes.windll.gdi32.SelectObject(hdc_mem,
+            ctypes.windll.gdi32.GetCurrentObject(hdc_mem, 6))  # OBJ_FONT=6
+        ctypes.windll.gdi32.DeleteObject(hfont)
+        ctypes.windll.gdi32.DeleteDC(hdc_mem)
+
+        # --- 3. AND 掩码：全 0 = 所有像素都不透明 ---
+        mask_row_stride = (size + 31) // 32 * 4
+        mask_bytes = b'\x00' * (mask_row_stride * size)
         hbmp_mask = ctypes.windll.gdi32.CreateBitmap(
-            w, h, 1, 1, bytes(mask_bytes))
+            size, size, 1, 1, mask_bytes)
 
+        # --- 4. 创建图标 ---
         class ICONINFO(ctypes.Structure):
-            _fields_ = [("fIcon", wintypes.BOOL), ("xHotspot", wintypes.DWORD),
-                        ("yHotspot", wintypes.DWORD), ("hbmColor", wintypes.HBITMAP),
-                        ("hbmMask", wintypes.HBITMAP)]
+            _fields_ = [
+                ("fIcon", wintypes.BOOL), ("xHotspot", wintypes.DWORD),
+                ("yHotspot", wintypes.DWORD), ("hbmColor", wintypes.HBITMAP),
+                ("hbmMask", wintypes.HBITMAP)]
 
-        ii = ICONINFO(True, w//2, h//2, hbmp_color, hbmp_mask)
+        ii = ICONINFO(True, size // 2, size // 2, hbmp_color, hbmp_mask)
         hicon = ctypes.windll.user32.CreateIconIndirect(ctypes.byref(ii))
 
         # 清理 GDI 对象
         ctypes.windll.gdi32.DeleteObject(hbmp_color)
         ctypes.windll.gdi32.DeleteObject(hbmp_mask)
-        ctypes.windll.user32.ReleaseDC(0, hdc)
+        ctypes.windll.user32.ReleaseDC(0, hdc_screen)
         return hicon
 
     def show_balloon(self, title, message, warn=False):
@@ -441,7 +434,7 @@ class UWFApp:
 
     # ==================== UI 布局 ====================
     def _setup_ui(self):
-        self.root.title("UWF Manager Pro v2.9")
+        self.root.title("UWF Manager Pro v2.10")
         self.root.geometry("1100x800")
         self.root.configure(bg=BG)
         self.root.minsize(900, 680)
@@ -462,7 +455,7 @@ class UWFApp:
         title_bar = tk.Frame(self.root, bg=ACCENT, height=48)
         title_bar.pack(fill=tk.X)
         title_bar.pack_propagate(False)
-        tk.Label(title_bar, text="UWF Manager Pro v2.9",
+        tk.Label(title_bar, text="UWF Manager Pro v2.10",
                  font=FONT_TITLE, fg="white", bg=ACCENT).pack(
             side=tk.LEFT, padx=18, pady=8)
         self.lbl_admin = tk.Label(title_bar, text="", font=FONT_BOLD,
@@ -516,6 +509,42 @@ class UWFApp:
                      lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         self.canvas1 = canvas
         self._bind_mousewheel(canvas)
+
+        # ====== UWF 引导开启卡片（未安装时显示）======
+        self.guide_frame = tk.Frame(content, bg=BG)
+        self.guide_frame.pack(fill=tk.X, pady=(0, 8))
+
+        guide_inner = tk.Frame(self.guide_frame, bg="#FFF4CE",  # 浅黄背景（警告/引导风格）
+                               highlightbackground="#E6B800", highlightthickness=1)
+        guide_inner.pack(fill=tk.X, padx=2, pady=2)
+
+        guide_title_row = tk.Frame(guide_inner, bg="#FFF4CE")
+        guide_title_row.pack(fill=tk.X, padx=12, pady=(10, 4))
+        tk.Label(guide_title_row, text="💡 UWF 未启用  |  UWF Not Enabled",
+                 font=("Segoe UI", 11, "bold"), fg="#7A5C00", bg="#FFF4CE").pack(side=tk.LEFT)
+
+        guide_desc = tk.Label(guide_inner,
+            text="统一写入筛选器（UWF）是 Windows 内置的「影子系统」功能。\n"
+                 "启用后每次重启自动还原，适合公用电脑、自助终端、亲子保护等场景。\n\n"
+                 "Unified Write Filter (UWF) is Windows' built-in \"shadow system\" feature.\n"
+                 "After enabled, the system auto-restores on every reboot. "
+                 "Perfect for public PCs, kiosks, child protection, etc.",
+            font=FONT, fg="#5A4A00", bg="#FFF4CE", justify=tk.LEFT)
+        guide_desc.pack(anchor="w", padx=12, pady=(0, 8))
+
+        guide_btn_row = tk.Frame(guide_inner, bg="#FFF4CE")
+        guide_btn_row.pack(fill=tk.X, padx=12, pady=(0, 10))
+
+        self.btn_enable_uwf = ttk.Button(guide_btn_row, text="🔧 一键开启 UWF (自动)  |  Enable UWF Automatically",
+                                         command=self.on_enable_uwf_auto, width=36)
+        self.btn_enable_uwf.pack(side=tk.LEFT, padx=(0, 6))
+
+        ttk.Button(guide_btn_row, text="📂 打开 Windows 功能面板  |  Open Windows Features",
+                   command=self.on_open_windows_features, width=34).pack(side=tk.LEFT)
+
+        self.guide_status = tk.Label(guide_inner, text="", font=("Segoe UI", 8),
+                                      fg="#7A5C00", bg="#FFF4CE")
+        self.guide_status.pack(anchor="w", padx=12, pady=(0, 6))
 
         # --- UWF 状态卡片 ---
         inner = self._card(content, "UWF 状态")
@@ -955,9 +984,19 @@ class UWFApp:
             self.lbl_msg.config(text=f"错误: {msg}")
             self.lbl_admin.config(
                 text="管理员" if self.admin else "非管理员!")
+            # UWF 不可用 → 显示引导开启卡片
+            try:
+                self.guide_frame.pack(fill=tk.X, pady=(0, 8))
+            except Exception:
+                pass
             return
 
         self._rendered = True
+        # UWF 可用 → 隐藏引导卡片
+        try:
+            self.guide_frame.pack_forget()
+        except Exception:
+            pass
         flt, vols, overlay, cfg = data
 
         # --- 状态 ---
@@ -1127,6 +1166,77 @@ class UWFApp:
                 f"已用 {used_mb:.0f}MB / {max_mb:.0f}MB ({used_ratio*100:.0f}%)\n"
                 "可右键托盘图标选择「清理缓存释放覆盖层」。",
                 warn=False)
+
+    def on_enable_uwf_auto(self):
+        """一键自动启用 UWF 功能（通过 DISM 命令）。"""
+        import subprocess
+
+        self.guide_status.config(text="⏳ 正在启用 UWF... / Enabling UWF, please wait...")
+        self.root.update()
+
+        try:
+            # 使用 DISM 启用 UWF 功能（需要管理员权限，/norestart 不自动重启）
+            result = subprocess.run(
+                ["dism", "/online", "/enable-feature",
+                 "/featurename:Client-UnifiedWriteFilter",
+                 "/all", "/norestart"],
+                capture_output=True, text=True, timeout=120,
+                encoding="gbk", errors="replace")
+            output = result.stdout + result.stderr
+
+            if result.returncode == 0:
+                self.guide_status.config(
+                    text="✅ UWF 已启用！请重启电脑以完成安装。\n"
+                         "✅ UWF enabled! Please restart PC to complete installation.",
+                    fg="#107C10")
+                messagebox.showinfo(
+                    "UWF 已启用 / UWF Enabled",
+                    "统一写入筛选器（UWF）功能已成功启用！\n\n"
+                    "Unified Write Filter has been enabled successfully!\n\n"
+                    "请重启电脑以完成安装。 / Please restart your PC.\n\n"
+                    "重启后打开本软件即可开始使用 UWF。\n"
+                    "After reboot, open this app to start using UWF.")
+            else:
+                # 检查是否是"已启用"的错误（返回码可能非 0 但实际成功）
+                if "已启用" in output or "enabled" in output.lower():
+                    self.guide_status.config(text="✅ UWF 已经是启用状态。请重启确认。", fg="#107C10")
+                    messagebox.showinfo("提示", "UWF 已经是启用状态。请重启电脑确认。")
+                else:
+                    self.guide_status.config(text=f"❌ 启用失败 (code {result.returncode})", fg="#D13438")
+                    messagebox.showerror(
+                        "启用失败 / Enable Failed",
+                        f"DISM 返回码: {result.returncode}\n\n{output[:500]}")
+        except subprocess.TimeoutExpired:
+            self.guide_status.config(text="❌ 操作超时（>120秒）", fg="#D13438")
+            messagebox.showerror("超时", "DISM 操作超时。请手动启用或检查网络。")
+        except FileNotFoundError:
+            self.guide_status.config(text="❌ 找不到 DISM 工具", fg="#D13438")
+            messagebox.showerror("错误", "找不到 DISM 工具。请使用「打开 Windows 功能面板」手动启用。")
+        except Exception as ex:
+            self.guide_status.config(text=f"❌ 错误: {ex}", fg="#D13438")
+            messagebox.showerror("错误", f"启用 UWF 时出错：\n{ex}")
+
+    def on_open_windows_features(self):
+        """打开 Windows 可选功能控制面板页面（让用户手动勾选 UWF）。"""
+        import subprocess
+        try:
+            # 打开「启用或关闭 Windows 功能」控制面板
+            subprocess.Popen("optionalfeatures", shell=True)
+            self.guide_status.config(
+                text="📂 已打开 Windows 功能面板 → 设备锁定 → 勾选「统一写入筛选器」→ 确定",
+                fg="#7A5C00")
+        except Exception as ex:
+            # 备用方案：用 control.exe
+            try:
+                subprocess.Popen(
+                    'control.exe "appwiz.cpl,,2"', shell=True)
+            except Exception:
+                messagebox.showerror(
+                    "错误 / Error",
+                    f"无法打开 Windows 功能面板。\n"
+                    f"Cannot open Windows Features panel.\n\n"
+                    f"请手动操作：控制面板 > 程序 > 启用或关闭 Windows 功能 "
+                    f"> 设备锁定 > 统一写入筛选器")
 
     def on_clean_cache(self):
         """执行缓存清理：删除临时文件/浏览器缓存等，释放 UWF 覆盖层空间。"""
