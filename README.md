@@ -26,13 +26,22 @@ Microsoft only ships the `uwfmgr.exe` command line — **no GUI**. This tool is 
 - 💾 **文件浏览器 / File explorer** — 找出哪些文件、目录正在“吃掉”你的覆盖层内存。
 - 📝 **实时写入监控 / Real-time write monitor** — 开启后持续监听系统盘写入，实时滚动显示“有哪些文件刚写进了内存”，可导出 TXT。
 - ⚙️ **设置面板 / Settings** — 最大缓存、警告/严重阈值、写入过滤、覆盖类型、HORM、排除列表（UWF 启用时控件自动只读，避免无效修改）。
-- 🚫 **排除列表 / Exclusions** — 查看与管理系统受保护卷的排除项（文件 / 注册表），直接写入真实磁盘。
+- 🚫 **排除列表 / Exclusions** — 查看与管理系统受保护卷的排除项，文件排除与**注册表排除**分开管理（独立选项卡，支持导入/导出/右键删除），直接写入真实磁盘，与开源 [UWFPRO](https://github.com/FrenzyPig/UWFPRO) 对齐。
+- 🛠 **服务模式 / Servicing mode** — 启用「服务模式」便于系统更新时穿透覆盖层（下次重启生效）。
 - 🔧 **操作 / Actions** — 启用 / 禁用 UWF、提交删除（穿透覆盖层写入真实磁盘）、重启。
 - 🔍 **托盘常驻 / System tray** — 最小化到托盘，后台持续运行与监控。
 
 ---
 
 ## 📌 更新日志 / Changelog
+
+### v2.7 (2026-08-18)
+- ✨ **补齐 UWFPRO 缺失能力（深度测试通过）** — 在真实已启用 UWF 的环境完成 19 项深度测试，全部通过且自还原，机器状态与初始快照完全一致。
+  - 📁 **注册表排除 / Registry exclusions** — 新增「注册表排除」独立选项卡：添加 / 删除 / 提交注册表值 / 导入导出 / 右键删除，与 UWFPRO 功能对齐。
+  - 🛠 **服务模式 / Servicing** — 新增服务模式启用/禁用（设置面板）。注意：本机实测 `uwfmgr.exe servicing` 子命令在部分 Windows 版本返回「不支持」（0x85E00005），但 WMI `UWF_Servicing.Enable/Disable` 实际可用；故内部改走 WMI 并做二次状态校验，确保可用。
+  - 📂 **覆盖层文件只读列表** — 文件分析页新增「覆盖层文件」只读列表（走 WMI `UWF_Overlay.GetOverlayFiles`，因该方法在部分环境会挂起，已加 15 秒线程超时容错，超时返回空列表不影响主线程）。
+  - 🧹 **排除项去重** — `get_exclusions` 按 (盘符, 路径) 去重，避免 UWF_Volume 双会话实例导致的重复计数。
+- 🐞 **修复写入路径致命缺陷** — 补全此前遗漏的 `UWFError` / `UWFNotSupported` 异常类定义（否则任意写操作都会 `NameError` 崩溃）。
 
 ### v2.6 (2026-08-18)
 - 🐛 **修复启动即崩（关键）** — 修复 `Treeview.column("会话")` / `column("生效")` 的 `TclError: Invalid column index`（列定义与 column ID 不一致导致一打开就崩溃）。

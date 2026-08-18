@@ -1,5 +1,5 @@
 """
-UWF Manager Pro v2.6 - 主程序（tkinter UI）
+UWF Manager Pro v2.7 - 主程序（tkinter UI）
 功能：
   1. 状态面板：启用/禁用/HORM/关机待处理
   2. 覆盖层内存监控（已用/总容量/阈值变色）← 修复数据显示
@@ -48,6 +48,21 @@ FONT_BIG = ("Segoe UI", 24, "bold")
 # 覆盖类型映射
 OVERLAY_TYPES = {0: "基于内存", 1: "基于磁盘"}
 OVERLAY_TYPES_REV = {"基于内存": 0, "基于磁盘": 1}
+
+
+def human_size(n):
+    """把字节数格式化为可读字符串。"""
+    try:
+        n = int(n)
+    except Exception:
+        n = 0
+    if n >= 1024 * 1024 * 1024:
+        return f"{n / 1024 / 1024 / 1024:.2f} GB"
+    if n >= 1024 * 1024:
+        return f"{n / 1024 / 1024:.2f} MB"
+    if n >= 1024:
+        return f"{n / 1024:.1f} KB"
+    return f"{n} B"
 
 
 def boot_time_epoch():
@@ -220,7 +235,7 @@ class UWFApp:
 
     # ==================== UI 布局 ====================
     def _setup_ui(self):
-        self.root.title("UWF Manager Pro v2.6")
+        self.root.title("UWF Manager Pro v2.7")
         self.root.geometry("1100x800")
         self.root.configure(bg=BG)
         self.root.minsize(900, 680)
@@ -241,7 +256,7 @@ class UWFApp:
         title_bar = tk.Frame(self.root, bg=ACCENT, height=48)
         title_bar.pack(fill=tk.X)
         title_bar.pack_propagate(False)
-        tk.Label(title_bar, text="UWF Manager Pro v2.6",
+        tk.Label(title_bar, text="UWF Manager Pro v2.7",
                  font=FONT_TITLE, fg="white", bg=ACCENT).pack(
             side=tk.LEFT, padx=18, pady=8)
         self.lbl_admin = tk.Label(title_bar, text="", font=FONT_BOLD,
@@ -271,6 +286,11 @@ class UWFApp:
         tab4 = ttk.Frame(self.notebook)
         self.notebook.add(tab4, text="  文件分析  ")
         self._build_tab_files(tab4)
+
+        # ---- Tab 5: 注册表排除 ----
+        tab5 = ttk.Frame(self.notebook)
+        self.notebook.add(tab5, text="  注册表排除  ")
+        self._build_tab_registry(tab5)
 
         # 底部信息栏
         self.lbl_msg = tk.Label(self.root, text="", font=FONT,
@@ -445,11 +465,24 @@ class UWFApp:
         self.cb_horm.grid(row=r, column=1, sticky="w", padx=4, pady=5)
         r += 1
 
+        # 服务模式
+        tk.Label(grid, text="服务模式:", bg=CARD_BG, font=FONT).grid(
+            row=r, column=0, sticky="e", padx=4, pady=5)
+        self.var_servicing = tk.StringVar(value="—")
+        self.cb_servicing = ttk.Combobox(grid, textvariable=self.var_servicing,
+                                         values=["启用", "禁用"], state="readonly",
+                                         width=14)
+        self.cb_servicing.grid(row=r, column=1, sticky="w", padx=4, pady=5)
+        r += 1
+
         btn_row = tk.Frame(inner, bg=CARD_BG)
         btn_row.pack(fill=tk.X, pady=(8, 0))
         self.btn_apply_basic = ttk.Button(btn_row, text="应用基本设置", width=16,
                                           command=self.on_apply_basic)
         self.btn_apply_basic.pack(side=tk.LEFT, padx=2)
+        self.btn_apply_servicing = ttk.Button(btn_row, text="应用服务模式", width=16,
+                                              command=self.on_apply_servicing)
+        self.btn_apply_servicing.pack(side=tk.LEFT, padx=2)
 
         # --- 缓存设置(MB) ---
         inner = self._card(left_col, "缓存设置 (MB)")
@@ -639,6 +672,29 @@ class UWFApp:
                                     bg=CARD_BG, justify=tk.LEFT, wraplength=950)
         self.lbl_summary.pack(anchor="w", pady=(4, 0))
 
+        # --- 覆盖层文件（只读）---
+        inner = self._card(content, "覆盖层文件（当前会话 · 只读）")
+        ovf_top = tk.Frame(inner, bg=CARD_BG)
+        ovf_top.pack(fill=tk.X, pady=(4, 2))
+        tk.Label(ovf_top, text="分区:", bg=CARD_BG, font=FONT).pack(side=tk.LEFT)
+        self.var_ovf_drive = tk.StringVar(value="C:")
+        ttk.Combobox(ovf_top, textvariable=self.var_ovf_drive,
+                     values=["C:"], width=8, state="readonly").pack(
+                         side=tk.LEFT, padx=4)
+        ttk.Button(ovf_top, text="刷新列表", width=12,
+                   command=self.on_refresh_overlay_files).pack(side=tk.LEFT, padx=6)
+        self.lbl_ovf_count = tk.Label(ovf_top, text="", bg=CARD_BG, fg=TEXT_SUB,
+                                      font=FONT)
+        self.lbl_ovf_count.pack(side=tk.LEFT, padx=6)
+        ovf_cols = ("文件路径", "大小")
+        self.tree_ovf = ttk.Treeview(inner, columns=ovf_cols, show="headings",
+                                     height=8)
+        for c in ovf_cols:
+            self.tree_ovf.heading(c, text=c)
+        self.tree_ovf.column("文件路径", width=640)
+        self.tree_ovf.column("大小", width=120)
+        self.tree_ovf.pack(fill=tk.BOTH, expand=True, pady=4)
+
     # ==================== 通用辅助 ====================
     def _card(self, parent, title):
         card = tk.Frame(parent, bg=CARD_BG, relief=tk.RAISED, borderwidth=1)
@@ -774,6 +830,8 @@ class UWFApp:
         self._update_protect_table(vols)
         # --- 刷新排除列表 ---
         self._refresh_exclusions_ui()
+        # --- 刷新注册表排除列表 ---
+        self._refresh_registry_ui()
 
         self.lbl_msg.config(
             text=f"最后刷新: {time.strftime('%H:%M:%S')}  |  "
@@ -806,6 +864,20 @@ class UWFApp:
         # HORM
         if flt.get("HORMEnabled") is not None:
             self.var_horm.set("启用" if flt["HORMEnabled"] else "禁用")
+        # 服务模式
+        if hasattr(self, "var_servicing"):
+            try:
+                sc = uwf_core.UWFCore()
+                sc.connect()
+                svc = sc.get_servicing()
+                if svc:
+                    ne = svc.get("NextEnabled")
+                    ce = svc.get("CurrentEnabled")
+                    val = ne if ne is not None else ce
+                    if val is not None:
+                        self.var_servicing.set("启用" if val else "禁用")
+            except Exception:
+                pass
         # 缓存值
         if cfg.get("MaximumSize"):
             self.ent_max_size.delete(0, tk.END)
@@ -1647,6 +1719,220 @@ class UWFApp:
     # ==================== 窗口关闭（最小化到托盘）====================
     def on_close(self):
         self.tray.hide_main()
+
+    # ==================== Tab 5: 注册表排除（与 UWFPRO 对齐）====================
+    def _build_tab_registry(self, parent):
+        top = tk.Frame(parent, bg=BG)
+        top.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+
+        # 上半部分：添加排除
+        add_frame = tk.Frame(top, bg=BG)
+        add_frame.pack(fill=tk.X, pady=(0, 8))
+        inner = self._card(add_frame, "添加注册表排除项")
+        grid = tk.Frame(inner, bg=CARD_BG)
+        grid.pack(fill=tk.X)
+        tk.Label(grid, text="注册表项:", bg=CARD_BG, font=FONT).grid(
+            row=0, column=0, sticky="e", padx=4, pady=5)
+        self.var_reg_key = tk.StringVar()
+        ttk.Entry(grid, textvariable=self.var_reg_key, width=60).grid(
+            row=0, column=1, sticky="we", padx=4, pady=5)
+        grid.columnconfigure(1, weight=1)
+        tk.Label(grid, text="(完整路径, 如 HKLM\\SOFTWARE\\Microsoft\\Windows\\"
+                 "CurrentVersion\\Run)", bg=CARD_BG, font=("Segoe UI", 8),
+                 fg=TEXT_SUB).grid(row=1, column=1, sticky="w", padx=4)
+
+        reg_btns = tk.Frame(inner, bg=CARD_BG)
+        reg_btns.pack(fill=tk.X, pady=(8, 0))
+        ttk.Button(reg_btns, text="添加排除", width=12,
+                   command=self.on_add_reg_exclusion).pack(side=tk.LEFT, padx=2)
+        ttk.Button(reg_btns, text="提交注册表值", width=14,
+                   command=self.on_commit_reg).pack(side=tk.LEFT, padx=2)
+        ttk.Button(reg_btns, text="导入列表", width=12,
+                   command=self.on_import_reg).pack(side=tk.LEFT, padx=2)
+        ttk.Button(reg_btns, text="导出列表", width=12,
+                   command=self.on_export_reg).pack(side=tk.LEFT, padx=2)
+
+        # 下半部分：排除列表
+        inner = self._card(top, "注册表排除列表（下次会话生效 · 右键可删除）")
+        reg_cols = ("注册表项",)
+        self.tree_reg = ttk.Treeview(inner, columns=reg_cols, show="headings",
+                                     height=15)
+        self.tree_reg.heading("注册表项", text="注册表项")
+        self.tree_reg.column("注册表项", width=760)
+        self.tree_reg.pack(fill=tk.BOTH, expand=True, pady=4)
+        self.reg_menu = tk.Menu(self.root, tearoff=0)
+        self.reg_menu.add_command(label="删除选中",
+                                 command=self.on_remove_reg_sel)
+        self.tree_reg.bind("<Button-3>", self.on_reg_rightclick)
+
+        reg_bot = tk.Frame(inner, bg=CARD_BG)
+        reg_bot.pack(fill=tk.X, pady=(4, 0))
+        self.lbl_reg_count = tk.Label(reg_bot, text="", bg=CARD_BG, fg=TEXT_SUB,
+                                      font=FONT)
+        self.lbl_reg_count.pack(side=tk.LEFT)
+        ttk.Button(reg_bot, text="刷新列表", width=12,
+                   command=self.on_refresh_reg).pack(side=tk.RIGHT, padx=2)
+
+    def _refresh_registry_ui(self):
+        def op():
+            c = uwf_core.UWFCore()
+            c.connect()
+            return c.get_registry_exclusions()
+        def done(keys):
+            for i in self.tree_reg.get_children():
+                self.tree_reg.delete(i)
+            for k in keys:
+                self.tree_reg.insert("", "end", values=(k,))
+            self.lbl_reg_count.config(text=f"共 {len(keys)} 条注册表排除项")
+        def fail(m):
+            self.lbl_reg_count.config(text=f"获取失败: {m}")
+        self._run_com("reg_gen", op, done, fail)
+
+    def on_refresh_reg(self):
+        self._refresh_registry_ui()
+
+    def on_add_reg_exclusion(self):
+        key = self.var_reg_key.get().strip()
+        if not key:
+            messagebox.showwarning("提示", "请输入注册表项路径。")
+            return
+        def op():
+            c = uwf_core.UWFCore()
+            c.connect()
+            c.add_registry_exclusion(key)
+            return key
+        def done(k):
+            messagebox.showinfo("成功", f"已添加注册表排除:\n{k}\n重启后生效。")
+            self._refresh_registry_ui()
+        def fail(m):
+            messagebox.showerror("失败", m)
+        self._run_com("reg_gen", op, done, fail)
+
+    def on_remove_reg_sel(self):
+        sel = self.tree_reg.selection()
+        if not sel:
+            return
+        key = self.tree_reg.item(sel[0], "values")[0]
+        def op():
+            c = uwf_core.UWFCore()
+            c.connect()
+            c.remove_registry_exclusion(key)
+            return key
+        def done(k):
+            messagebox.showinfo("成功", f"已删除注册表排除:\n{k}")
+            self._refresh_registry_ui()
+        def fail(m):
+            messagebox.showerror("失败", m)
+        self._run_com("reg_gen", op, done, fail)
+
+    def on_reg_rightclick(self, event):
+        if self.tree_reg.selection():
+            self.reg_menu.post(event.x_root, event.y_root)
+
+    def on_commit_reg(self):
+        key = self.var_reg_key.get().strip()
+        if not key:
+            messagebox.showwarning("提示", "请输入要提交的注册表项路径。")
+            return
+        value = simpledialog.askstring(
+            "提交注册表值",
+            f"输入要提交的值名称（针对 {key}）：\n留空则提交整个项。")
+        if value is None:
+            return
+        if not value.strip():
+            messagebox.showwarning("提示", "提交注册表值需要填写值名称。")
+            return
+        def op():
+            c = uwf_core.UWFCore()
+            c.connect()
+            c.commit_registry(key, value.strip())
+            return key
+        def done(k):
+            messagebox.showinfo("成功", f"已提交注册表更改:\n{k}")
+        def fail(m):
+            messagebox.showerror("失败", m)
+        self._run_com("reg_gen", op, done, fail)
+
+    def on_import_reg(self):
+        path = filedialog.askopenfilename(filetypes=[("文本文件", "*.txt")])
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                keys = [l.strip() for l in f if l.strip()]
+        except Exception as e:
+            messagebox.showerror("导入失败", str(e))
+            return
+        def op():
+            c = uwf_core.UWFCore()
+            c.connect()
+            added = []
+            for k in keys:
+                try:
+                    c.add_registry_exclusion(k)
+                    added.append(k)
+                except Exception:
+                    pass
+            return added
+        def done(added):
+            messagebox.showinfo("导入完成", f"成功导入 {len(added)}/{len(keys)} 条。")
+            self._refresh_registry_ui()
+        def fail(m):
+            messagebox.showerror("失败", m)
+        self._run_com("reg_gen", op, done, fail)
+
+    def on_export_reg(self):
+        keys = [self.tree_reg.item(i, "values")[0]
+                for i in self.tree_reg.get_children()]
+        if not keys:
+            messagebox.showwarning("提示", "当前没有可导出的注册表排除项。")
+            return
+        path = filedialog.asksaveasfilename(defaultextension=".txt",
+                                            filetypes=[("文本文件", "*.txt")])
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                for k in keys:
+                    f.write(k + "\n")
+            messagebox.showinfo("导出完成", f"已导出 {len(keys)} 条到:\n{path}")
+        except Exception as e:
+            messagebox.showerror("导出失败", str(e))
+
+    # ==================== 服务模式 ====================
+    def on_apply_servicing(self):
+        val = self.var_servicing.get()
+        enable = (val == "启用")
+        def op():
+            c = uwf_core.UWFCore()
+            c.connect()
+            c.set_servicing(enable)
+            return enable
+        def done(en):
+            messagebox.showinfo("服务模式",
+                                f"已设为{'启用' if en else '禁用'}，重启后生效。")
+            self.refresh()
+        def fail(m):
+            messagebox.showerror("失败", m)
+        self._run_com("svc_gen", op, done, fail)
+
+    # ==================== 覆盖层文件（只读）====================
+    def on_refresh_overlay_files(self):
+        drive = self.var_ovf_drive.get()
+        def op():
+            c = uwf_core.UWFCore()
+            c.connect()
+            return c.get_overlay_files(drive)
+        def done(files):
+            for i in self.tree_ovf.get_children():
+                self.tree_ovf.delete(i)
+            for f in files:
+                self.tree_ovf.insert(
+                    "", "end", values=(f["path"], human_size(f["size"])))
+            self.lbl_ovf_count.config(text=f"共 {len(files)} 个文件")
+        def fail(m):
+            self.lbl_ovf_count.config(text=f"获取失败: {m}")
+        self._run_com("ovf_gen", op, done, fail)
 
 
 # ==================== 入口 ====================
