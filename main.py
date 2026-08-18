@@ -1,5 +1,5 @@
 """
-UWF Manager Pro v2.0 - 主程序（tkinter UI）
+UWF Manager Pro v2.4 - 主程序（tkinter UI）
 功能：
   1. 状态面板：启用/禁用/HORM/关机待处理
   2. 覆盖层内存监控（已用/总容量/阈值变色）← 修复数据显示
@@ -26,6 +26,9 @@ import uwf_core
 import file_scan
 import overlay_monitor
 import ctypes
+import win32gui
+import win32api
+import win32con
 
 # ==================== 常量与主题 ====================
 ACCENT = "#0078D4"
@@ -55,64 +58,108 @@ def boot_time_epoch():
         return time.time() - 86400
 
 
-# ==================== 托盘图标类 ====================
+# ==================== 托盘图标类（真实系统托盘）====================
 class SystemTrayIcon:
-    """使用 tkinter 的 withdraw + 自绘窗口模拟系统托盘（兼容 PyInstaller）。"""
+    """基于 win32gui 的真实系统托盘图标（右下角通知区）。"""
+
+    WM_TRAY = win32con.WM_USER + 20
 
     def __init__(self, parent_app):
         self.app = parent_app
-        self.root = parent_app.root
         self.visible = False
+        self.hwnd = None
+        self.hicon = None
+        self._init()
+
+    def _init(self):
+        wc = win32gui.WNDCLASS()
+        wc.hInstance = win32api.GetModuleHandle(None)
+        wc.lpszClassName = "UWFManagerProTray"
+        wc.lpfnWndProc = self._wndproc
+        wc.style = win32con.CS_VREDRAW | win32con.CS_HREDRAW
+        wc.hCursor = win32api.LoadCursor(0, win32con.IDC_ARROW)
+        wc.hbrBackground = win32con.COLOR_WINDOW + 1
+        try:
+            self.atom = win32gui.RegisterClass(wc)
+        except Exception:
+            self.atom = wc.lpszClassName  # 已注册则直接用类名
+        self.hwnd = win32gui.CreateWindow(
+            self.atom, "UWFManagerProTray", 0, 0, 0, 0, 0, 0, 0,
+            wc.hInstance, None)
+        self.hicon = win32gui.LoadIcon(0, 32518)  # IDI_SHIELD
+        self.visible = True
+        flags = win32gui.NIF_ICON | win32gui.NIF_MESSAGE | win32gui.NIF_TIP
+        nid = (self.hwnd, 0, flags, self.WM_TRAY, self.hicon,
+               "UWF Manager Pro")
+        win32gui.Shell_NotifyIcon(win32gui.NIM_ADD, nid)
+
+    def _wndproc(self, hwnd, msg, wparam, lparam):
+        if msg == self.WM_TRAY:
+            if lparam == win32con.WM_LBUTTONDBLCLK:
+                self.restore()
+            elif lparam == win32con.WM_RBUTTONUP:
+                self._show_menu()
+        elif msg == win32con.WM_COMMAND:
+            cmd = win32api.LOWORD(wparam)
+            if cmd == 1:
+                self.restore()
+            elif cmd == 2:
+                self.quit_app()
+        elif msg == win32con.WM_DESTROY:
+            self.destroy()
+        return win32gui.DefWindowProc(hwnd, msg, wparam, lparam)
+
+    def _show_menu(self):
+        menu = win32gui.CreatePopupMenu()
+        win32gui.AppendMenu(menu, win32con.MF_STRING, 1, "显示主窗口")
+        win32gui.AppendMenu(menu, win32con.MF_STRING, 2, "退出")
+        pos = win32api.GetCursorPos()
+        win32gui.SetForegroundWindow(self.hwnd)
+        win32gui.TrackPopupMenu(menu, win32con.TPM_LEFTALIGN,
+                                pos[0], pos[1], 0, self.hwnd, None)
+        win32gui.PostMessage(self.hwnd, win32con.WM_NULL, 0, 0)
 
     def update_tooltip(self, text):
-        """更新托盘提示文字（通过修改窗口标题实现）。"""
-        if self.visible:
+        if self.visible and self.hwnd:
             try:
-                self.tray_root.title(f"UWF Manager Pro - {text}")
+                nid = (self.hwnd, 0, win32gui.NIF_TIP, self.WM_TRAY,
+                       self.hicon, "UWF Manager Pro - " + str(text))
+                win32gui.Shell_NotifyIcon(win32gui.NIM_MODIFY, nid)
             except Exception:
                 pass
-
-    def show(self):
-        """显示托盘图标（最小化到托盘而非关闭）。"""
-        self.visible = True
-        # 创建一个隐藏的托盘提示窗口
-        self.tray_root = tk.Tk()
-        self.tray_root.withdraw()
-        self.tray_root.overrideredirect(True)
-        # 使用 WM_SETICON 设置任务栏图标
-        try:
-            self.tray_root.iconbitmap(default="")
-        except Exception:
-            pass
-        self.tray_root.title("UWF Manager Pro")
-        # 绑定双击恢复
-        self.tray_root.bind("<Double-Button-1>", self._on_restore)
-
-    def hide_main(self):
-        """隐藏主窗口（最小化到托盘）。"""
-        self.root.withdraw()
-        if not self.visible:
-            self.show()
 
     def restore(self):
-        """从托盘恢复主窗口。"""
         try:
-            self.root.deiconify()
-            self.root.lift()
-            self.root.focus_force()
+            self.app.root.deiconify()
+            self.app.root.lift()
+            self.app.root.focus_force()
         except Exception:
             pass
 
-    def _on_restore(self, event=None):
-        self.restore()
+    def hide_main(self):
+        try:
+            self.app.root.withdraw()
+        except Exception:
+            pass
+
+    def quit_app(self):
+        try:
+            self.destroy()
+        except Exception:
+            pass
+        try:
+            self.app.root.destroy()
+        except Exception:
+            pass
 
     def destroy(self):
-        self.visible = False
-        if hasattr(self, 'tray_root'):
+        if self.visible and self.hwnd:
             try:
-                self.tray_root.destroy()
+                win32gui.Shell_NotifyIcon(
+                    win32gui.NIM_DELETE, (self.hwnd, 0))
             except Exception:
                 pass
+        self.visible = False
 
 
 # ==================== 主应用类 ====================
@@ -123,6 +170,7 @@ class UWFApp:
         self.status_gen = 0
         self.log_gen = 0
         self.settings_gen = 0
+        self.rt_gen = 0
         self._rendered = False
         # 实时写入监控状态
         self.monitor = overlay_monitor.OverlayMonitor()
@@ -135,6 +183,7 @@ class UWFApp:
         self.tray = SystemTrayIcon(self)
         self._setup_ui()
         self.refresh()
+        self._start_auto_refresh()
 
     # ---------- 管理员检测 ----------
     def _check_admin(self):
@@ -170,7 +219,7 @@ class UWFApp:
 
     # ==================== UI 布局 ====================
     def _setup_ui(self):
-        self.root.title("UWF Manager Pro v2.0")
+        self.root.title("UWF Manager Pro v2.4")
         self.root.geometry("1100x800")
         self.root.configure(bg=BG)
         self.root.minsize(900, 680)
@@ -191,7 +240,7 @@ class UWFApp:
         title_bar = tk.Frame(self.root, bg=ACCENT, height=48)
         title_bar.pack(fill=tk.X)
         title_bar.pack_propagate(False)
-        tk.Label(title_bar, text="UWF Manager Pro v2.0",
+        tk.Label(title_bar, text="UWF Manager Pro v2.4",
                  font=FONT_TITLE, fg="white", bg=ACCENT).pack(
             side=tk.LEFT, padx=18, pady=8)
         self.lbl_admin = tk.Label(title_bar, text="", font=FONT_BOLD,
@@ -254,14 +303,14 @@ class UWFApp:
 
         btn_row = tk.Frame(inner, bg=CARD_BG)
         btn_row.pack(fill=tk.X, pady=(8, 0))
-        self.btn_toggle = ttk.Button(btn_row, text="启用 UWF",
+        self.btn_toggle = ttk.Button(btn_row, text="开启保护",
                                      command=self.on_toggle, width=14)
         self.btn_toggle.pack(side=tk.LEFT, padx=(0, 6))
         ttk.Button(btn_row, text="提交所有删除", width=14,
                    command=self.on_commit_all).pack(side=tk.LEFT, padx=3)
         ttk.Button(btn_row, text="重启系统", width=12,
                    command=self.on_restart).pack(side=tk.LEFT, padx=3)
-        ttk.Button(btn_row, text="关机", width=10,
+        ttk.Button(btn_row, text="关机保护", width=12,
                    command=self.on_shutdown).pack(side=tk.LEFT, padx=3)
         ttk.Button(btn_row, text="刷新", width=8,
                    command=self.refresh).pack(side=tk.LEFT, padx=3)
@@ -441,14 +490,14 @@ class UWFApp:
         right_col.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(4, 8), pady=8)
 
         inner = self._card(right_col, "分区保护设置（当前状态 / 重启状态）")
-        cols = ("分区", "当前状态", "下次状态")
+        cols = ("分区", "当前状态", "生效")
         self.tree_protect = ttk.Treeview(inner, columns=cols, show="headings",
                                          height=6)
         for c in cols:
             self.tree_protect.heading(c, text=c)
         self.tree_protect.column("分区", width=60)
         self.tree_protect.column("当前状态", width=100)
-        self.tree_protect.column("下次状态", width=100)
+        self.tree_protect.column("生效", width=100)
         self.tree_protect.pack(fill=tk.X, pady=4)
         # 右键菜单
         self.prot_menu = tk.Menu(self.root, tearoff=0)
@@ -640,10 +689,10 @@ class UWFApp:
         enabled = flt.get("CurrentEnabled")
         if enabled:
             self.lbl_status.config(text="已启用", fg=GREEN)
-            self.btn_toggle.config(text="禁用 UWF")
+            self.btn_toggle.config(text="关闭保护")
         else:
             self.lbl_status.config(text="已禁用", fg=RED)
-            self.btn_toggle.config(text="启用 UWF")
+            self.btn_toggle.config(text="开启保护")
         next_en = flt.get("NextEnabled")
         next_s = "启用" if next_en else "禁用" if next_en is not None else "?"
         self.lbl_mode.config(
@@ -790,8 +839,7 @@ class UWFApp:
                 continue
             seen.add(dl)
             cur = "已保护" if v.get("Protected") else "未保护"
-            # NextEnabled 决定下次状态
-            nxt = "受保护"  # 默认
+            nxt = "当前会话" if v.get("CurrentSession") else "下次重启"
             self.tree_protect.insert("", "end", values=(dl, cur, nxt))
 
     def _refresh_exclusions_ui(self):
@@ -817,6 +865,110 @@ class UWFApp:
 
     def _render_error(self, msg, _supported):
         self._render_status(None, is_error=True, msg=msg)
+
+    # ==================== 实时自动刷新（覆盖层内存/卷列表）====================
+    def _start_auto_refresh(self):
+        self._auto_refresh()
+
+    def _auto_refresh(self):
+        if not self.root.winfo_exists():
+            return
+
+        def fetch():
+            c = uwf_core.UWFCore()
+            c.connect()
+            return (c.get_filter(), c.get_volumes(),
+                    c.get_overlay(), c.get_overlay_config())
+
+        def done(data):
+            try:
+                self._render_realtime(data)
+            except Exception:
+                pass
+            if self.root.winfo_exists():
+                self.root.after(3000, self._auto_refresh)
+
+        def fail(m, s):
+            if self.root.winfo_exists():
+                self.root.after(3000, self._auto_refresh)
+
+        self._run_com("rt_gen", fetch, done, fail)
+
+    def _render_realtime(self, data):
+        """仅刷新：状态文字、覆盖层内存条、受保护卷列表。
+        不触动设置面板，避免打断用户正在输入的阈值。"""
+        flt, vols, overlay, cfg = data
+        # --- 状态文字 ---
+        enabled = flt.get("CurrentEnabled")
+        if enabled:
+            self.lbl_status.config(text="已启用", fg=GREEN)
+            self.btn_toggle.config(text="关闭保护")
+        else:
+            self.lbl_status.config(text="已禁用", fg=RED)
+            self.btn_toggle.config(text="开启保护")
+        next_en = flt.get("NextEnabled")
+        next_s = "启用" if next_en else "禁用" if next_en is not None else "?"
+        self.lbl_mode.config(
+            text=f"下次启动: {next_s}  |  "
+                 f"HORM: {'开' if flt.get('HORMEnabled') else '关'}  |  "
+                 f"关机待处理: {'是' if flt.get('ShutdownPending') else '否'}")
+        try:
+            self.tray.update_tooltip(
+                f"UWF {'已启用' if enabled else '已禁用'}")
+        except Exception:
+            pass
+        # --- 覆盖层内存（实时）---
+        if overlay:
+            used_mb = overlay.get("OverlayConsumption") or 0
+            avail_mb = overlay.get("AvailableSpace") or 0
+            max_cfg = cfg.get("MaximumSize") or 4096
+            total_mb = used_mb + avail_mb
+            display_total = max(total_mb, max_cfg)
+            pct = (used_mb / display_total * 100) if display_total > 0 else 0
+            warn = overlay.get("WarningOverlayThreshold") or 0
+            crit = overlay.get("CriticalOverlayThreshold") or 0
+            self.lbl_overlay.config(
+                text=f"{used_mb:.0f} MB / {display_total:.0f} MB "
+                     f"(上限 {max_cfg} MB)")
+            self.bar_overlay["value"] = min(pct, 100)
+            bar_color = ACCENT
+            if crit and used_mb >= crit:
+                bar_color = RED
+            elif warn and used_mb >= warn:
+                bar_color = AMBER
+            self.style.configure("Accent.Horizontal.TProgressbar",
+                                background=bar_color)
+            alert = ""
+            if crit and used_mb >= crit:
+                alert = "  ⚠ 已达临界阈值!"
+            elif warn and used_mb >= warn:
+                alert = "  ⚠ 已超警告阈值"
+            self.lbl_overlay_detail.config(
+                text=f"已用 {pct:.1f}%  |  可用 {avail_mb:.0f} MB{alert}")
+        elif cfg.get("MaximumSize"):
+            self.lbl_overlay.config(text=f"上限 {cfg['MaximumSize']} MB")
+            self.lbl_overlay_detail.config(text="（无实时用量数据）")
+        else:
+            self.lbl_overlay.config(text="—")
+            self.lbl_overlay_detail.config(text="")
+        # --- 卷列表（实时）---
+        for i in self.tree_vol.get_children():
+            self.tree_vol.delete(i)
+        seen = set()
+        for v in vols:
+            dl = v.get("DriveLetter") or "?"
+            if dl in seen:
+                continue
+            seen.add(dl)
+            prot = "已保护" if v.get("Protected") else "未保护"
+            cons = v.get("OverlayConsumption")
+            cons_s = f"{cons:.0f} MB" if cons else "—"
+            sess = v.get("CurrentSession")
+            sess_s = "当前会话" if sess else "仅下次"
+            cp = v.get("CommitPending")
+            cp_s = "有" if cp else "无"
+            self.tree_vol.insert("", "end", values=(
+                dl, prot, cons_s, sess_s, cp_s))
 
     # ==================== 操作：启用/禁用 ====================
     def on_toggle(self):
