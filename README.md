@@ -1,101 +1,191 @@
-# Win10 自带还原 UWF · UWF Manager Pro
-# Win10 Built-in Restore UWF · UWF Manager Pro
+# Windows Built-in "Shadow" System — Restart Restore UWF · UWF Manager Pro
 
-> 🤖 **本项目由用户与 AI 协作开发**，目前为**初步版本（Preliminary）**，功能会持续迭代更新。
-> This project is **co-developed by a user and an AI assistant**. It is currently a **preliminary version** and will be improved over time.
+# win 自带"影子"系统，重启还原 UWF · UWF Manager Pro
 
-[English version below / 中文说明在上]
+> **Graphical manager for Windows Unified Write Filter (UWF)** — Turn your Windows 10/11 PC into a **reboot-to-restore "shadow" system**.
+>
+> **Windows 统一写入筛选器（UWF）图形化管理器** — 让你的 Win10/11 电脑变成**重启即还原的"影子系统"**。
 
----
-
-## 简介 / Introduction
-
-Windows 10/11 企业版、教育版、IoT 企业版自带 **UWF（Unified Write Filter，统一写入筛选器）**。它会把对所有受保护卷（通常是 C 盘）的“写入”重定向到一个**覆盖层（Overlay）**——可以是内存，也可以是磁盘。重启后覆盖层被丢弃，系统**一键还原**到原始状态，相当于系统自带的“影子系统 / 还原模式”。
-
-Windows 10/11 **Enterprise / Education / IoT Enterprise** editions ship with **UWF (Unified Write Filter)**. It redirects every write to a protected volume (usually `C:`) into an **overlay** (in memory or on disk). After a reboot the overlay is discarded and the system is **restored** to its original state — essentially a built-in “shadow / stealth mode” for Windows.
-
-但微软只提供了命令行 `uwfmgr.exe`，**没有图形界面**。本工具就是 UWF 的**图形化管理器**，让你像用普通软件一样查看、配置、监控 UWF。
-
-Microsoft only ships the `uwfmgr.exe` command line — **no GUI**. This tool is a **graphical manager for UWF**, so you can view, configure, and monitor UWF like a normal desktop app.
+[中文说明在下 / Chinese below]
 
 ---
 
-## ✨ 功能特性 / Features
+## What is UWF? / 什么是 UWF？
 
-- 📊 **状态面板 / Status dashboard** — UWF 启用状态、覆盖层已用/剩余内存、阈值进度条（接近上限自动变红）。
-- 💾 **文件浏览器 / File explorer** — 找出哪些文件、目录正在“吃掉”你的覆盖层内存。
-- 📝 **实时写入监控 / Real-time write monitor** — 开启后持续监听系统盘写入，实时滚动显示“有哪些文件刚写进了内存”，可导出 TXT。
-- ⚙️ **设置面板 / Settings** — 最大缓存、警告/严重阈值、写入过滤、覆盖类型、HORM、排除列表（UWF 启用时控件自动只读，避免无效修改）。
-- 🚫 **排除列表 / Exclusions** — 查看与管理系统受保护卷的排除项，文件排除与**注册表排除**分开管理（独立选项卡，支持导入/导出/右键删除），直接写入真实磁盘，与开源 [UWFPRO](https://github.com/FrenzyPig/UWFPRO) 对齐。
-- 🛠 **服务模式 / Servicing mode** — 启用「服务模式」便于系统更新时穿透覆盖层（下次重启生效）。
-- 🔧 **操作 / Actions** — 启用 / 禁用 UWF、提交删除（穿透覆盖层写入真实磁盘）、重启。
-- 🔍 **托盘常驻 / System tray** — 最小化到托盘，后台持续运行与监控；图标**动态显示剩余内存数值**（深色底 + 金黄数字），使用率偏高时变红警示并弹出气泡通知。
-- 🧹 **一键缓存清理 / One-click cache cleanup** — 覆盖层使用率过高时（或手动右键托盘），一键清理临时文件/浏览器缓存等，释放 UWF 覆盖层空间。
+**UWF (Unified Write Filter)** is a built-in Windows feature available on **Windows 10 and Windows 11 Enterprise / Education / IoT Enterprise** editions. It intercepts all writes to a protected volume (usually `C:`) and redirects them to an **overlay** (in RAM or on disk). When you reboot, the overlay is discarded and the system is **restored to its original state** — like a built-in "shadow mode / deep freeze" for Windows.
+
+**UWF（统一写入筛选器）** 是 **Windows 10 和 Windows 11 企业版 / 教育版 / IoT 企业版** 自带的功能。它拦截对受保护卷（通常是 C 盘）的所有写入，重定向到**覆盖层**（内存或磁盘）。重启后覆盖层被丢弃，系统**一键还原**到原始状态——相当于系统自带的"影子模式 / 冰点还原"。
+
+> **Microsoft only provides `uwfmgr.exe` command line — no GUI. This tool gives you a full graphical interface.**
+>
+> **微软只提供了 `uwfmgr.exe` 命令行——没有图形界面。本工具提供完整的 GUI。**
+
+- Official docs: https://learn.microsoft.com/en-us/windows/configuration/unified-write-filter/
+- 官方文档：https://learn.microsoft.com/zh-cn/windows/configuration/unified-write-filter/
 
 ---
 
-## 📌 更新日志 / Changelog
+## Supported Systems / 支持的系统
+
+| Edition | Win10 | Win11 |
+|---------|:-----:|:-----:|
+| **Enterprise / 企业版** | ✅ | ✅ |
+| **Education / 教育版** | ✅ | ✅ |
+| **IoT Enterprise / IoT 企业版** | ✅ | ✅ |
+| Home / 家庭版 | ❌ | ❌ |
+| Pro / 专业版 | ❌ | ❌ |
+
+> UWF replaces the legacy EWF (Enhanced Write Filter) and FBWF (File-Based Write Filter) from Windows 7 Embedded.
+>
+> UWF 替换了 Windows 7 嵌入式的旧版 EWF（增强型写入筛选器）和 FBWF（基于文件的写入筛选器）。
+
+---
+
+## How to Install UWF / 如何安装 UWF
+
+UWF is an optional Windows feature. Follow these steps to enable it:
+
+UWF 是一个可选的 Windows 功能。按以下步骤启用：
+
+### Step-by-step / 分步操作
+
+1. Open **Control Panel** > **Programs** > **Turn Windows features on or off**.
+   打开 **控制面板** > **程序** > **启用或关闭 Windows 功能**。
+2. Expand **Device Lockdown** (设备锁定).
+3. Check ☑️ **Unified Write Filter** (统一写入筛选器).
+4. Click **OK** (确定) and **restart your computer** (重启电脑).
+
+![Enable UWF in Windows Features](docs/uwf-enable-screenshot.png)
+
+> After reboot, UWF is installed but **not yet enabled**. Use this tool (or `uwfmgr.exe filter enable`) to turn it on.
+>
+> 重启后 UWF 已安装但**尚未启用**。使用本工具（或 `uwfmgr.exe filter enable`）来开启保护。
+
+### Command-line alternative / 命令行方式
+
+```cmd
+:: Enable UWF feature (requires restart)
+:: 启用 UWF 功能（需重启）
+dism /online /enable-feature /featureName:Client-UnifiedWriteFilter /Restart
+```
+
+### Verify installation / 验证是否已安装
+
+```cmd
+uwfmgr.exe
+:: If installed, this shows UWF help text.
+:: 如果已安装，会显示 UWF 帮助信息。
+```
+
+---
+
+## Features / 功能特性
+
+- **Status Dashboard** — UWF state, overlay used/free memory, threshold progress bar (auto-red when near limit).
+  **状态面板** — UWF 启用状态、覆盖层已用/剩余内存、阈值进度条（接近上限自动变红）。
+- **File Explorer** — Find which files/folders are consuming your overlay memory.
+  **文件浏览器** — 找出哪些文件/目录正在"吃掉"覆盖层内存。
+- **Real-time Write Monitor** — Continuously monitor disk writes; see exactly what's being written to the overlay in real-time; export to TXT.
+  **实时写入监控** — 持续监听系统盘写入，实时显示写进了内存的文件；可导出 TXT。
+- **Settings Panel** — Max cache size, warning/critical thresholds, write filter toggle, overlay type, HORM, exclusion list (controls auto-read-only when UWF is active).
+  **设置面板** — 最大缓存、警告/严重阈值、写入过滤、覆盖类型、HORM、排除列表（UWF 启用时控件自动只读）。
+- **Exclusions Manager** — File exclusions & **Registry exclusions** managed separately (separate tabs, import/export/right-click delete), aligned with [UWFPRO](https://github.com/FrenzyPig/UWFPRO).
+  **排除列表管理** — 文件排除与**注册表排除**分开管理（独立选项卡，支持导入/导出/右键删除），与开源 UWFPRO 对齐。
+- **Servicing Mode** — Enable servicing mode for system updates through the overlay (takes effect after next reboot).
+  **服务模式** — 启用服务模式便于系统更新时穿透覆盖层（下次重启生效）。
+- **Actions** — Enable/disable UWF, commit deletions (pierce overlay to write to real disk), reboot.
+  **操作** — 启用/禁用 UWF、提交删除（穿透覆盖层写入真实磁盘）、重启。
+- **System Tray** — Minimize to tray for background monitoring; icon **dynamically displays remaining overlay memory** (dark background + golden numbers); turns red when low; balloon notifications when usage is high.
+  **托盘常驻** — 最小化到托盘后台监控；图标**动态显示剩余内存数值**（深色底+金黄数字）；偏低时变红；使用率高时弹出气泡通知。
+- **One-click Cache Cleanup** — Clean temp files/browser caches to free up overlay space when usage is high (or manually via right-click tray menu).
+  **一键缓存清理** — 覆盖层使用率过高时（或手动右键托盘），清理临时文件/浏览器缓存等释放空间。
+
+---
+
+## Changelog / 更新日志
 
 ### v2.8 (2026-08-18)
-- 🎨 **动态数字托盘图标** — 右下角托盘图标不再显示默认 Windows 图标，而是**实时显示剩余覆盖层内存数值**（如 `3.2G` / `850M`），深色底 + 金黄数字（类似仪表盘），风格简洁直观。剩余 < 20% 时自动变红色警示。
-- 🔔 **托盘气泡通知** — 覆盖层使用率 ≥ 65% 时弹出提醒（5 分钟冷却，避免骚扰）；≥ 85% 时紧急红色警示。通知内容含已用/总量 MB 和百分比。
-- 🧹 **一键缓存清理释放覆盖层** — 托盘右键菜单新增「清理缓存释放覆盖层」选项；支持安全清理：用户临时文件、系统临时文件、浏览器缓存（Chrome/Edge）、Windows 预读取、缩略图缓存、Windows Update 下载缓存等。实测本机可清理 **~625 MB** 缓存，直接释放 UWF 覆盖层空间。清理前有确认对话框，清理后显示详细报告并自动刷新数据。
-- 📦 **依赖 Pillow** — 动态图标使用 PIL/Pillow 生成 ARGB 32-bit 图标（圆角矩形 + 抗锯齿文字），通过 Windows `CreateDIBSection` + `CreateIconIndirect` 注入系统托盘。
+- **Dynamic Number Tray Icon** — Tray icon now shows **real-time remaining overlay memory** (e.g., `3.2G` / `850M`) with dark background + golden numbers (dashboard style). Auto-turns red when remaining < 20%. Uses PIL/Pillow ARGB 32-bit icons via Windows `CreateDIBSection`.
+  **动态数字托盘图标** — 实时显示剩余覆盖层内存（如 `3.2G` / `850M`），深灰底+金黄数字（仪表盘风格）。剩余 < 20% 时变红警示。使用 Pillow ARGB 图标通过 CreateDIBSection 注入托盘。
+- **Overlay Threshold Monitoring + Balloon Notifications** — Warning at ≥65% usage, critical alert at ≥85%, 5-minute cooldown.
+  **覆盖层阈值监控+气泡通知** — ≥65% 提醒，≥85% 紧急警示，5 分钟冷却。
+- **One-click Cache Cleanup** — Tray right-click option to clean %TEMP%, browser caches, Prefetch, thumbnails, Windows Update cache. Tested ~625 MB freed locally.
+  **一键缓存清理** — 托盘右键清理临时文件/浏览器缓存等。实测本机可清理 ~625 MB。
+- **Pillow Dependency** — Dynamic icons use PIL/Pillow for ARGB generation.
 
 ### v2.7 (2026-08-18)
-- ✨ **补齐 UWFPRO 缺失能力（深度测试通过）** — 在真实已启用 UWF 的环境完成 19 项深度测试，全部通过且自还原，机器状态与初始快照完全一致。
-  - 📁 **注册表排除 / Registry exclusions** — 新增「注册表排除」独立选项卡：添加 / 删除 / 提交注册表值 / 导入导出 / 右键删除，与 UWFPRO 功能对齐。
-  - 🛠 **服务模式 / Servicing** — 新增服务模式启用/禁用（设置面板）。注意：本机实测 `uwfmgr.exe servicing` 子命令在部分 Windows 版本返回「不支持」（0x85E00005），但 WMI `UWF_Servicing.Enable/Disable` 实际可用；故内部改走 WMI 并做二次状态校验，确保可用。
-  - 📂 **覆盖层文件只读列表** — 文件分析页新增「覆盖层文件」只读列表（走 WMI `UWF_Overlay.GetOverlayFiles`，因该方法在部分环境会挂起，已加 15 秒线程超时容错，超时返回空列表不影响主线程）。
-  - 🧹 **排除项去重** — `get_exclusions` 按 (盘符, 路径) 去重，避免 UWF_Volume 双会话实例导致的重复计数。
-- 🐞 **修复写入路径致命缺陷** — 补全此前遗漏的 `UWFError` / `UWFNotSupported` 异常类定义（否则任意写操作都会 `NameError` 崩溃）。
+- **Registry Exclusions** — Separate tab for registry exclusion management (add/delete/commit/import/export), aligned with UWFPRO.
+  **注册表排除** — 独立选项卡管理注册表排除项，与 UWFPRO 对齐。
+- **Servicing Mode** — Enable/disable via WMI (`UWF_Servicing.Enable/Disable`). Falls back from `uwfmgr.exe servicing` (returns "not supported" on some editions).
+  **服务模式** — 通过 WMI 启用/禁用。从 uwfmgr.exe servicing 回退（部分版本返回不支持）。
+- **Overlay Files List** — Read-only list of files in overlay (via WMI `GetOverlayFiles`, 15s timeout protection).
+  **覆盖层文件列表** — 覆盖层内文件只读列表（WMI GetOverlayFiles，15 秒超时保护）。
+- **Exclusion Deduplication** — Deduplicate by (drive, path) to avoid double-counting from dual-session instances.
+  **排除项去重** — 按(盘符,路径)去重避免双会话重复计数。
+- **Fixed critical NameError bug** — Added missing `UWFError` / `UWFNotSupported` exception class definitions.
+  **修复致命 NameError** — 补全遗漏的异常类定义。
 
 ### v2.6 (2026-08-18)
-- 🐛 **修复启动即崩（关键）** — 修复 `Treeview.column("会话")` / `column("生效")` 的 `TclError: Invalid column index`（列定义与 column ID 不一致导致一打开就崩溃）。
-- ✅ **无需管理员启动** — 改回 `asInvoker`（启动不弹 UAC）；写操作通过 `ShellExecuteEx(runas)` **按需自动提权**（仅在该操作时弹一次 UAC），和参考软件 `UWFPRO` 行为一致：普通用户可打开浏览，写操作时才请求授权。
-- 🧹 **清除所有 admin 门卫** — 移除全部 11 处 `if not self.admin:` 拦截（开启/关闭保护、关机保护、提交删除、排除项、缓存设置、分区保护等），所有操作均走按需提权。
+- **Fixed startup crash** — Resolved `TclError: Invalid column index` in Treeview columns.
+  **修复启动崩溃** — 解决 Treeview 列索引错误。
+- **No admin required at launch** — Changed back to `asInvoker`; write operations auto-elevate via UAC on demand (matches UWFPRO behavior).
+  **无需管理员启动** — 改回 asInvoker；写操作按需自动提权 UAC（与 UWFPRO 一致）。
+- **Removed all admin gates** — All 11 admin-check blocks removed; everything uses on-demand elevation.
+  **清除所有管理员门卫** — 移除全部 11 处权限拦截，全部走按需提权。
 
 ### v2.5 (2026-08-18)
-- 🔔 **托盘显示剩余内存** — 右下角托盘 tooltip 实时显示「UWF 状态 + 剩余内存 X MB（已用 Y MB）」，不再只显示一个盾牌图标。
-- 🛡 **内嵌管理员清单（关键修复）** — 打包时嵌入 `requireAdministrator` 清单，软件启动即自动提权（与参考软件 `UWF管理器.exe` 行为一致）。此前的 `asInvoker` 导致 `uwfmgr` 写入静默失败，正是“分区保护/开启保护根本无效”的根因。
-- 🗂 **分区保护待生效态修正** — 正确解析 `UWF_Volume` 的“当前会话/下次会话”双实例，分区保护表新增「重启后状态」列，保护/取消保护后明确显示「已保护（重启生效）」/「未保护（重启取消）」，重启后自动消除待生效标记；并新增「立即重启生效」按钮。
+- **Tray tooltip with memory info** — Shows UWF state + remaining/used memory in tooltip.
+  **托盘显示剩余内存** — Tooltip 显示 UWF 状态与内存数据。
+- **Embedded admin manifest** — Fixed root cause of silent write failures (previous `asInvoker` caused `uwfmgr` writes to fail silently).
+  **内嵌管理员清单** — 修复写入静默失败的根因（此前 asInvoker 导致 uwfmgr 写入失败）。
+- **Pending-state display** — Correctly handles current/next-session dual instances; shows "protected (after reboot)" status.
+  **待生效态修正** — 正确处理当前/下次会话双实例，显示重启后状态。
 
 ### v2.4 (2026-08-18)
-- 🛠 **修复所有写入操作失效** — 启用 / 禁用保护、开启 / 关闭保护、关机保护、排除项增删、阈值设置等全部改为调用官方 `uwfmgr.exe`，彻底解决此前按钮无响应的问题。
-- 🔔 **真实系统托盘** — 改用 Win32 原生通知区图标（右下角任务栏），支持左键双击恢复窗口、右键菜单（显示主窗口 / 退出）。
-- ⚡ **覆盖层内存实时刷新** — 状态面板的内存水位每 3 秒自动刷新，无需手动点击。
-- ⚠️ RAM 模式覆盖层上限为 1024 MB，超出会给出友好提示。
+- **Fixed all write operations** — Switched to official `uwfmgr.exe` for all write operations.
+  **修复所有写入操作** — 全部改用官方 uwfmgr.exe。
+- **Native system tray** — Win32 notification area icon with double-click restore and right-click menu.
+  **真实系统托盘** — Win32 原生通知区图标。
+- **Real-time overlay refresh** — Memory stats auto-refresh every 3 seconds.
+  **覆盖层实时刷新** — 内存水位每 3 秒自动刷新。
 
 ### v2.3 (2026-08-13)
-- 初始公开版本（Initial public release）。
+- Initial public release. 初始公开版本。
 
 ---
 
-## 📋 系统要求 / Requirements
+## Requirements / 系统要求
 
-- Windows 10 / 11 **企业版 / 教育版 / IoT 企业版**（需支持 UWF 功能）。
-- **普通用户即可启动浏览**；写操作（保护/排除/设置变更等）会**自动弹出 UAC 请求管理员授权**。
-- UWF 依赖特定过滤驱动，通常与 Hyper-V 等存在共存限制，请确认环境支持。
-- **English**: Windows 10/11 **Enterprise / Education / IoT Enterprise** with the UWF feature enabled; **launch as normal user** — write operations auto-elevate via UAC on demand.
-
----
-
-## 🚀 快速使用 / Quick Start
-
-1. 前往 [Releases](../../releases) 下载 `UWF Manager Pro.exe`。
-2. **双击直接运行**（无需右键管理员）。
-3. 首次打开会自动检测 UWF 状态并加载数据；执行写操作时会自动弹出 UAC 授权。
+- **OS**: Windows 10 or Windows 11 (**Enterprise / Education / IoT Enterprise** edition)
+- **Launch**: Run as normal user (no admin needed); write operations auto-elevate via UAC on demand
+- **UWF feature must be installed** (see [How to Install UWF](#how-to-install-uwf--如何安装-uwf) above)
+- **Note**: UWF uses a filter driver that may conflict with Hyper-V; verify your environment supports it
+- **操作系统**: Windows 10 或 Windows 11（**企业版 / 教育版 / IoT 企业版**）
+- **启动方式**: 普通用户即可运行（无需管理员）；写操作自动弹出 UAC 请求授权
+- **必须先安装 UWF 功能**（见上方「如何安装 UWF」）
+- **注意**: UWF 使用过滤驱动，可能与 Hyper-V 冲突，请确认环境支持
 
 ---
 
-## 🛠️ 从源码构建 / Build from Source
+## Quick Start / 快速使用
+
+1. Go to [Releases](../../releases) and download `UWF Manager Pro.exe`.
+   前往 [Releases](../../releases) 下载 `UWF Manager Pro.exe`。
+2. **Double-click to run** (no admin needed).
+   **双击直接运行**（无需管理员）。
+3. On first launch it auto-detects UWF state and loads data; write operations trigger UAC automatically.
+   首次打开自动检测 UWF 状态并加载数据；写操作自动弹出 UAC 授权。
+
+---
+
+## Build from Source / 从源码构建
 
 ```bash
 pip install -r requirements.txt
 
 pyinstaller "UWF Manager Pro.spec"
 
-# 或手动指定（无需 --uac-admin，启动不弹 UAC，写操作按需提权）：
+# Or manual spec (asInvoker manifest, no --uac-admin needed):
 pyinstaller --onefile --windowed --name "UWF Manager Pro" ^
   --add-data "uwf_core.py;." ^
   --add-data "file_scan.py;." ^
@@ -103,43 +193,57 @@ pyinstaller --onefile --windowed --name "UWF Manager Pro" ^
   main.py
 ```
 
-生成的单文件 exe 位于 `dist/UWF Manager Pro.exe`（`asInvoker` 清单，普通用户可启动；写操作自动 UAC 提权）。
+Output: `dist/UWF Manager Pro.exe` (single-file executable, ~20 MB).
 
-> 说明：WMI 的 `GetOverlayFiles` 在部分环境枚举量过大时会挂起，故实时监控改用 `ReadDirectoryChangesW` 文件系统监听（UWF 下所有系统盘写入都落在覆盖层，等价于监控“写进了内存的文件”）。
+输出：`dist/UWF Manager Pro.exe`（单文件可执行程序，约 20 MB）。
 
----
-
-## 📖 UWF 小知识 / About UWF
-
-覆盖层有大小上限（默认或自定义）。一旦写入超出上限，系统可能蓝屏或强制重启。本工具帮你**盯着这条水位线**，并告诉你“内存被哪些文件吃掉了”。
-
-The overlay has a size limit. Exceeding it can crash or force-reboot the system. This tool helps you **watch that water level** and shows you **which files are eating your overlay memory**.
+> Note: WMI `GetOverlayFiles` may hang on systems with large file counts, so real-time monitoring uses `ReadDirectoryChangesW` filesystem watcher instead (under UWF, all C: writes go to the overlay — equivalent to monitoring "files written to memory").
+>
+> 说明：WMI 的 `GetOverlayFiles` 在文件量大的环境可能挂起，故实时监控改用 `ReadDirectoryChangesW` 文件系统监听（UWF 下所有系统盘写入都落在覆盖层，等价于监控"写进了内存的文件"）。
 
 ---
 
-## 🤝 关于本项目 / About This Project
+## About UWF Overlay / 关于 UWF 覆盖层
 
-- 🤖 **AI 与用户协作 / Built with AI** — 软件由用户提出需求、亲自测试与反馈，并与 AI 助手共同完成编码、调试与打包。
-- 🐣 **初步版本 / Preliminary** — 当前为早期版本，核心功能已可用，后续会持续迭代：更多设置项、更友好的提示、可能的国际化等。
-- 💡 仓库公开后，欢迎提交 Issue 与 Pull Request。
+The overlay has a size limit (default or custom). Once writes exceed the limit, the system may crash or force-reboot. This tool helps you **watch that water level** and shows you **which files are eating your overlay memory**.
+
+覆盖层有大小上限（默认或自定义）。一旦写入超出上限，系统可能蓝屏或强制重启。本工具帮你**盯着这条水位线**，并告诉你"内存被哪些文件吃掉了"。
+
+| Overlay Type | Description | Pros | Cons |
+|:--|:--|:--|:--|
+| **RAM-based** | Overlay stored in memory | Fastest performance | Limited size (~1024 MB default); data lost on power loss |
+| **Disk-based** | Overlay stored on disk | Larger capacity possible | Slower than RAM; wears SSD |
+| **基于内存** | 覆盖层存于内存 | 性能最快 | 容量有限（默认~1024MB）；断电丢失 |
+| **基于磁盘** | 覆盖层存于磁盘 | 容量可以更大 | 慢于内存；磨损 SSD |
 
 ---
 
-## ⚠️ 免责声明 / Disclaimer
+## About This Project / 关于本项目
 
-本软件按“原样”提供，作者不对使用造成的任何系统问题负责。修改 UWF 配置、提交删除等操作会真实改变系统状态，请谨慎使用。
-
-Provided “as is”, without warranty of any kind. Changing UWF settings or committing deletions **does** affect the real system state — use with care.
+- **AI-collaborated development** — User defines requirements, tests, and provides feedback; AI assistant handles architecture, coding, debugging, and packaging.
+  **AI 协作开发** — 用户提出需求、测试反馈；AI 助手负责架构、编码、调试与打包。
+- **Preliminary version** — Core features are functional; ongoing iteration planned.
+  **初步版本** — 核心功能已可用，后续持续迭代。
+- Issues and PRs are welcome! 欢迎 Issue 和 Pull Request！
 
 ---
 
-## 📄 许可证 / License
+## Disclaimer / 免责声明
+
+Provided **"as is"**, without warranty of any kind. Changing UWF settings or committing deletions **does** affect the real system state — use with care.
+
+本软件按**"原样"**提供，作者不对使用造成的任何系统问题负责。修改 UWF 配置、提交删除等操作会**真实改变系统状态**，请谨慎使用。
+
+---
+
+## License / 许可证
 
 [MIT](LICENSE) — Copyright © 2026 UWF Manager Pro & AI collaborators.
 
 ---
 
-## 🙏 鸣谢 / Credits
+## Credits / 鸣谢
 
-- 用户与 AI 协作：需求定义、测试验证、反馈迭代。
-- AI 助手：架构设计、编码实现、调试与打包。
+- User & AI collaboration: requirements, testing, feedback iteration. 用户与 AI 协作：需求、测试、反馈迭代。
+- [UWFPRO](https://github.com/FrenzyPig/UWFPRO) — Reference implementation for exclusion management. 排除管理的参考实现。
+- Microsoft UWF documentation: https://learn.microsoft.com/en-us/windows/configuration/unified-write-filter/
