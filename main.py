@@ -1,5 +1,5 @@
 """
-UWF Manager Pro v2.13 - 主程序（tkinter UI）
+UWF Manager Pro v2.14 - 主程序（tkinter UI）
 功能：
   1. 状态面板：启用/禁用/HORM/关机待处理
   2. 覆盖层内存监控（已用/总容量/阈值变色）← 修复数据显示
@@ -208,7 +208,7 @@ class SystemTrayIcon:
                           "C:/Windows/Fonts/tahoma.ttf"):
             try:
                 # 从大到小尝试，直到文字宽度 ≤ 92% 图标宽度
-                fs = int(size * 0.62)  # 比旧版 0.50 更大
+                fs = int(size * 0.88)  # 极限大字号（去掉了%，字符少，可以更大）
                 while fs > 8:
                     f = ImageFont.truetype(font_name, fs)
                     bbox = draw.textbbox((0, 0), text, font=f)
@@ -387,7 +387,7 @@ class UWFApp:
 
     # ==================== UI 布局 ====================
     def _setup_ui(self):
-        self.root.title("UWF Manager Pro v2.13")
+        self.root.title("UWF Manager Pro v2.14")
         self.root.geometry("1100x800")
         self.root.configure(bg=BG)
         self.root.minsize(900, 680)
@@ -408,7 +408,7 @@ class UWFApp:
         title_bar = tk.Frame(self.root, bg=ACCENT, height=48)
         title_bar.pack(fill=tk.X)
         title_bar.pack_propagate(False)
-        tk.Label(title_bar, text="UWF Manager Pro v2.13",
+        tk.Label(title_bar, text="UWF Manager Pro v2.14",
                  font=FONT_TITLE, fg="white", bg=ACCENT).pack(
             side=tk.LEFT, padx=18, pady=8)
         self.lbl_admin = tk.Label(title_bar, text="", font=FONT_BOLD,
@@ -1054,14 +1054,13 @@ class UWFApp:
             max_sz = ov.get("MaximumSize") or 0
             used = ov.get("OverlayConsumption") or 0
 
-            # --- 动态图标文字（显示剩余百分比）---
+            # --- 动态图标文字（显示剩余百分比整数，最大化字号）---
             if enabled and avail > 0 and max_sz > 0:
                 pct = avail / max_sz * 100
-                icon_text = f"{pct:.1f}%"
+                icon_text = f"{round(pct)}"   # 整数如 "17"，字符少→字号大近2倍
                 warn = (pct < 20)  # 剩余 < 20% 变红
             elif enabled and avail > 0:
-                # 有可用空间但读不到上限 → 无法算百分比
-                icon_text = "100%"
+                icon_text = "100"
                 warn = False
             elif not enabled:
                 icon_text = "OFF"
