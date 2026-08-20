@@ -1,5 +1,5 @@
 """
-UWF Manager Pro v2.15 - 主程序（tkinter UI）
+UWF Manager Pro v2.16 - 主程序（tkinter UI）
 功能：
   1. 状态面板：启用/禁用/HORM/关机待处理
   2. 覆盖层内存监控（已用/总容量/阈值变色）← 修复数据显示
@@ -146,7 +146,7 @@ class SystemTrayIcon:
     def _show_menu(self):
         menu = win32gui.CreatePopupMenu()
         win32gui.AppendMenu(menu, win32con.MF_STRING, 1, "显示主窗口")
-        win32gui.AppendMenu(menu, win32con.MF_STRING, 3, "清理缓存释放覆盖层")
+        win32gui.AppendMenu(menu, win32con.MF_STRING, 3, "空间回收 (清理缓存)")
         win32gui.AppendMenu(menu, win32con.MF_SEPARATOR, 0, "")
         win32gui.AppendMenu(menu, win32con.MF_STRING, 2, "退出")
         pos = win32api.GetCursorPos()
@@ -387,7 +387,7 @@ class UWFApp:
 
     # ==================== UI 布局 ====================
     def _setup_ui(self):
-        self.root.title("UWF Manager Pro v2.15")
+        self.root.title("UWF Manager Pro v2.16")
         self.root.geometry("1100x800")
         self.root.configure(bg=BG)
         self.root.minsize(900, 680)
@@ -408,7 +408,7 @@ class UWFApp:
         title_bar = tk.Frame(self.root, bg=ACCENT, height=48)
         title_bar.pack(fill=tk.X)
         title_bar.pack_propagate(False)
-        tk.Label(title_bar, text="UWF Manager Pro v2.15",
+        tk.Label(title_bar, text="UWF Manager Pro v2.16",
                  font=FONT_TITLE, fg="white", bg=ACCENT).pack(
             side=tk.LEFT, padx=18, pady=8)
         self.lbl_admin = tk.Label(title_bar, text="", font=FONT_BOLD,
@@ -539,10 +539,10 @@ class UWFApp:
         # --- 清理缓存按钮（覆盖层卡片内）---
         cache_btn_row = tk.Frame(inner, bg=CARD_BG)
         cache_btn_row.pack(fill=tk.X, pady=(6, 0))
-        self.btn_clean_cache = ttk.Button(cache_btn_row, text="🧹 清理缓存释放覆盖层",
+        self.btn_clean_cache = ttk.Button(cache_btn_row, text="🧹 空间回收 (清理缓存)",
                                           command=self.on_clean_cache, width=24)
         self.btn_clean_cache.pack(side=tk.LEFT)
-        self.lbl_cache_hint = tk.Label(cache_btn_row, text="清理临时文件/浏览器缓存等释放 UWF 空间",
+        self.lbl_cache_hint = tk.Label(cache_btn_row, text="深度清理临时文件/浏览器/更新缓存等释放 UWF 空间",
                                        font=("Segoe UI", 8), fg=TEXT_SUB, bg=CARD_BG)
         self.lbl_cache_hint.pack(side=tk.LEFT, padx=8)
 
@@ -1114,7 +1114,7 @@ class UWFApp:
             self.tray.show_balloon(
                 "UWF 覆盖层偏高",
                 f"已用 {used_mb:.0f}MB / {max_mb:.0f}MB ({used_ratio*100:.0f}%)\n"
-                "可右键托盘图标选择「清理缓存释放覆盖层」。",
+                "可右键托盘图标选择「空间回收 (清理缓存)」。",
                 warn=False)
 
     def on_enable_uwf_auto(self):
@@ -1189,78 +1189,320 @@ class UWFApp:
                     f"> 设备锁定 > 统一写入筛选器")
 
     def on_clean_cache(self):
-        """执行缓存清理：删除临时文件/浏览器缓存等，释放 UWF 覆盖层空间。"""
+        """执行深度缓存清理（参考 Dism++ 空间回收原理）：删除临时文件/浏览器缓存/
+        Windows更新缓存/系统日志/应用程序缓存等，释放 UWF 覆盖层空间。"""
         import glob as _glob
         import shutil
 
-        # 定义清理目标：(标签, 路径模式列表, 说明)
+        # ==================== 清理规则定义（参考 Dism++ Data.xml）====================
+        # 每项: (标签, 路径模式列表, 说明, 是否默认勾选)
+        # 分为 6 大类，覆盖 Dism++ 核心清理项中不需要 DISM API 的部分
         targets = [
-            ("用户临时文件", [
+            # ===== 1. 系统临时文件 =====
+            ("📁 用户临时文件", [
                 os.path.join(os.environ.get("TEMP", ""), "*"),
-            ], "%%TEMP%% 目录"),
-            ("系统临时文件", [
-                r"C:\Windows\Temp\*",
-            ], "C:\\Windows\\Temp"),
-            ("Windows 预读取", [
-                r"C:\Windows\Prefetch\*.pf",
-            ], "Prefetch (*.pf)"),
-            ("缩略图缓存", [
+                os.path.join(os.environ.get("TEMP", ""), ".*"),
+            ], "%TEMP% 用户临时目录", True),
+            ("📁 系统临时文件", [r"C:\Windows\Temp\*"], r"C:\Windows\Temp", True),
+            ("📁 驱动解压残留 (Intel/AMD/NVIDIA)", [
+                r"C:\AMD\*", r"C:\Intel\*", r"C:\NVIDIA\*", r"C:\Prog\*",
+            ], "显卡/芯片组驱动安装解压目录", True),
+            ("📁 Windows 升级残留 ($Windows.*)", [
+                r"C:\$Windows.~BT\*", r"C:\$Windows.~WS\*", r"C:\$Windows.~LS\*",
+            ], "系统升级/还原后遗留的临时文件", False),
+
+            # ===== 2. Windows 更新缓存 =====
+            ("🔄 Windows 更新下载缓存", [
+                r"C:\Windows\SoftwareDistribution\Download\*",
+            ], "Windows Update 已下载的补丁包（数百MB~数GB）", True),
+            ("🔄 传递优化缓存 (DeliveryOptimization)", [
+                r"C:\Windows\SoftwareDistribution\DeliveryOptimization\*",
+            ], "Win10 传递优化服务 P2P 缓存", True),
+            ("🔄 Windows 更新记录 (DataStore)", [
+                r"C:\Windows\SoftwareDistribution\DataStore\*",
+            ], "Update 安装历史记录数据库", False),
+
+            # ===== 3. 日志与报告 =====
+            ("📋 Windows 错误报告 (WER)", [
                 os.path.join(os.environ.get("LOCALAPPDATA", ""),
-                             r"Microsoft\Windows\Explorer\thumbcache_*.db"),
-            ], "缩略图缓存"),
-            ("Chrome 缓存", [
+                             r"Microsoft\Windows\WER\*"),
+                os.path.join(os.environ.get("PROGRAMDATA", ""),
+                             r"Microsoft\Windows\WER\*"),
+            ], "程序崩溃/错误报告文件", True),
+            ("📋 Windows 事件日志", [
+                r"C:\Windows\System32\winevt\Logs\*.evtx",
+            ], "Windows Event Log 日志文件", True),
+            ("📋 系统崩溃转储 (.dmp)", [
+                os.path.join(os.environ.get("LOCALAPPDATA", ""), r"CrashDumps\*.dmp"),
+                r"C:\Windows\MEMORY.DMP", r"C:\Windows\Minidump\*",
+            ], "蓝屏/程序崩溃内存转储（可能很大）", True),
+            ("📋 Windows 日志文件 (*.log)", [
+                r"C:\Windows\Panther\*.log", r"C:\Windows\Panther\*.xml",
+                r"C:\Windows\Logs\CBS\*.log", r"C:\WinSxS\ManifestCache\*",
+                r"C:\CbsTemp\*",
+            ], "系统组件安装/更新日志", True),
+            ("📋 回收站", [r"C:\$Recycle.Bin\*"], "所有用户回收站内容", False),
+
+            # ===== 4. 浏览器与网络缓存 =====
+            ("🌐 Chrome 缓存", [
                 os.path.join(os.environ.get("LOCALAPPDATA", ""),
                              r"Google\Chrome\User Data\Default\Cache\*"),
                 os.path.join(os.environ.get("LOCALAPPDATA", ""),
                              r"Google\Chrome\User Data\Default\Code Cache\*"),
-            ], "Chrome 浏览器缓存"),
-            ("Edge 缓存", [
+                os.path.join(os.environ.get("LOCALAPPDATA", ""),
+                             r"Google\Chrome\User Data\Default\Service Worker\CacheStorage\*"),
+            ], "Chrome 浏览器缓存 + Code Cache", True),
+            ("🌐 Edge 缓存", [
                 os.path.join(os.environ.get("LOCALAPPDATA", ""),
                              r"Microsoft\Edge\User Data\Default\Cache\*"),
                 os.path.join(os.environ.get("LOCALAPPDATA", ""),
                              r"Microsoft\Edge\User Data\Default\Code Cache\*"),
-            ], "Edge 浏览器缓存"),
-            ("Windows 更新缓存", [
-                r"C:\Windows\SoftwareDistribution\Download\*",
-            ], "Windows Update 下载缓存"),
+            ], "Edge 浏览器缓存", True),
+            ("🌐 IE/WinINet 网页缓存", [
+                os.path.join(os.environ.get("LOCALAPPDATA", ""),
+                             r"Microsoft\Windows\INetCache\*"),
+                os.path.join(os.environ.get("LOCALAPPDATA", ""),
+                             r"Microsoft\Windows\INetCookies\*"),
+            ], "IE/系统组件网页缓存和 Cookies", True),
+            ("🌐 Terminal Server Client 缓存", [
+                os.path.join(os.environ.get("LOCALAPPDATA", ""),
+                             r"Microsoft\Terminal Server Client\*"),
+            ], "远程桌面客户端缓存", True),
+
+            # ===== 5. 系统加速缓存 =====
+            ("⚡ Windows 预读取 (Prefetch)", [r"C:\Windows\Prefetch\*"],
+             "Prefetch 预读取文件（会自动重建）", True),
+            ("⚡ 缩略图缓存 (Thumbcache)", [
+                os.path.join(os.environ.get("LOCALAPPDATA", ""),
+                             r"Microsoft\Windows\Explorer\thumbcache_*.db"),
+                os.path.join(os.environ.get("LOCALAPPDATA", ""),
+                             r"Microsoft\Windows\Explorer\IconCache.db"),
+            ], "缩略图缓存（需重启资源管理器）", True),
+            ("⚡ .NET Native Images 缓存", [
+                r"C:\Windows\assembly\NativeImages_v4.0_64\temp\*",
+                r"C:\Windows\assembly\NativeImages_v4.0_64\tmp\*",
+                r"C:\Windows\assembly\temp\*", r"C:\Windows\assembly\tmp\*",
+            ], ".NET 程序集原生镜像缓存（会自动重建）", True),
+            ("⚡ NuGet 包缓存", [
+                os.path.join(os.environ.get("USERPROFILE", ""), r".nuget\packages\*"),
+            ], ".NET 开发 NuGet 下载包缓存", False),
+
+            # ===== 6. 应用程序缓存 =====
+            ("📦 Office 安装源 (ClickToRun)", [
+                os.path.join(os.environ.get("PROGRAMDATA", ""),
+                             r"Microsoft\ClickToRun\Packages\*"),
+            ], "Office 365/2016 ClickToRun 安装源", False),
+            ("📦 Office 本地安装源 (MSOCache)", [r"C:\MSOCache\*"],
+             "Office 传统安装源文件", False),
+            ("📦 Windows Installer 补丁缓存", [
+                r"C:\Windows\Installer\$PatchCache$\*",
+            ], "MSP 补丁安装缓存（实验性）", False),
+            ("📦 PDB 符号调试缓存", [
+                os.path.join(os.environ.get("LOCALAPPDATA", ""), r"DBG\*"),
+            ], "Visual Studio 调试符号缓存", False),
+            ("📦 腾讯软件临时文件 (QQ等)", [
+                os.path.join(os.environ.get("APPDATA", ""), r"Tencent\AndroidAssist\*"),
+                os.path.join(os.environ.get("APPDATA", ""), r"Tencent\Logs\*"),
+                os.path.join(os.environ.get("APPDATA", ""), r"Tencent\WinTemp\*"),
+            ], "QQ/腾讯软件临时文件和日志", True),
         ]
 
-        # 确认对话框
-        msg = ("即将清理以下缓存以释放 UWF 覆盖层空间：\n\n"
-               + "\n".join(f"  • {t[2]}" for t in targets)
-               + "\n\n这些均为临时/缓存文件，删除安全。\n是否继续？")
-        if not messagebox.askyesno("确认清理缓存", msg):
-            return
+        # ==================== 第一阶段：扫描计算大小 ====================
+        scan_results = []
+        total_scan = 0
+
+        for label, patterns, desc, checked in targets:
+            item_size = 0
+            file_count = 0
+            for pat in patterns:
+                try:
+                    expanded = os.path.expandvars(pat)
+                    for fpath in _glob.glob(expanded):
+                        try:
+                            if os.path.isfile(fpath):
+                                item_size += os.path.getsize(fpath)
+                                file_count += 1
+                            elif os.path.isdir(fpath):
+                                for root, dirs, files in os.walk(fpath):
+                                    for fn in files:
+                                        try:
+                                            item_size += os.path.getsize(
+                                                os.path.join(root, fn))
+                                            file_count += 1
+                                        except (OSError, PermissionError):
+                                            continue
+                        except (OSError, PermissionError):
+                            continue
+                except (OSError, PermissionError):
+                    continue
+            scan_results.append((label, desc, item_size, patterns, checked))
+            total_scan += item_size
+
+        def human(sz):
+            if sz >= 1024**3:
+                return f"{sz / 1024**3:.2f} GB"
+            elif sz >= 1024**2:
+                return f"{sz / 1024**2:.1f} MB"
+            elif sz >= 1024:
+                return f"{sz / 1024:.0f} KB"
+            return f"{sz} B"
+
+        # ==================== 第二阶段：显示选择对话框 ====================
+        sel_win = tk.Toplevel(self.root)
+        sel_win.title("空间回收 - 选择清理项")
+        sel_win.geometry("580x520")
+        sel_win.transient(self.root)
+        sel_win.grab_set()
+        sel_win.resizable(False, False)
+
+        sel_win.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width() - 580) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - 520) // 2
+        sel_win.geometry(f"+{max(x,0)}+{max(y,0)}")
+
+        main_frame = tk.Frame(sel_win, bg="#ffffff", padx=16, pady=12)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        tk.Label(main_frame, text="🧹 空间回收 — 选择要清理的项目",
+                 font=("Segoe UI", 11, "bold"), bg="#ffffff", fg="#1a1a2e").pack(anchor="w")
+        tk.Label(main_frame,
+                 text=f"共扫描到 {human(total_scan)} 可释放空间（参考 Dism++ 空间回收）",
+                 font=("Segoe UI", 9), bg="#ffffff", fg="#666666").pack(anchor="w", pady=(2, 8))
+
+        btn_row = tk.Frame(main_frame, bg="#ffffff")
+        btn_row.pack(fill=tk.X, pady=(0, 4))
+        var_all = tk.BooleanVar(value=True)
+
+        def toggle_all():
+            val = var_all.get()
+            for v in check_vars:
+                v.set(val)
+
+        tk.Checkbutton(btn_row, text="全选/取消", variable=var_all,
+                       command=toggle_all,
+                       bg="#ffffff", font=("Segoe UI", 9),
+                       activebackground="#ffffff").pack(side=tk.LEFT)
+        tk.Label(btn_row, text=f"  总计: {human(total_scan)}",
+                 font=("Segoe UI", 9, "bold"), bg="#ffffff", fg="#e63946").pack(side=tk.RIGHT)
+
+        list_frame = tk.Frame(main_frame, bg="#f0f0f0", bd=1, relief=tk.SUNKEN)
+        list_frame.pack(fill=tk.BOTH, expand=True, pady=4)
+
+        canvas = tk.Canvas(list_frame, bg="#ffffff", highlightthickness=0)
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=canvas.yview)
+        scrollable = tk.Frame(canvas, bg="#ffffff")
+        scrollable.bind("<Configure>",
+                        lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=scrollable, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        check_vars = []
+        current_category = ""
+
+        for label, desc, sz, pats, chk in scan_results:
+            cat = label.split()[0] if label else ""
+            emoji = label.split(" ")[0] if label else ""
+            if cat != current_category and cat:
+                current_category = cat
+                sep = tk.Frame(scrollable, height=1, bg="#e0e0e0")
+                sep.pack(fill=tk.X, padx=4, pady=(6, 2))
+                cat_names = {
+                    "📁": "📂 系统临时文件", "🔄": "📂 Windows 更新缓存",
+                    "📋": "📂 日志与报告", "🌐": "📂 浏览器与网络缓存",
+                    "⚡": "📂 系统加速缓存", "📦": "📂 应用程序缓存",
+                }
+                tk.Label(scrollable, text=cat_names.get(emoji, cat),
+                         font=("Segoe UI", 9, "bold"), bg="#ffffff",
+                         fg="#444444", anchor="w").pack(fill=tk.X, padx=8, pady=(4, 0))
+
+            row = tk.Frame(scrollable, bg="#ffffff")
+            row.pack(fill=tk.X, padx=4, pady=1)
+            var = tk.BooleanVar(value=chk)
+            check_vars.append(var)
+            cb = tk.Checkbutton(row, text="", variable=var,
+                                bg="#ffffff", activebackground="#ffffff",
+                                selectcolor="#e8f4fc")
+            cb.pack(side=tk.LEFT, anchor="n", padx=(0, 4))
+
+            info = tk.Frame(row, bg="#ffffff")
+            info.pack(side=tk.LEFT, fill=tk.X, expand=True)
+            tk.Label(info, text=label[2:].strip(), font=("Segoe UI", 9),
+                     bg="#ffffff", fg="#333333", anchor="w").pack(anchor="w")
+            tk.Label(info, text=desc, font=("Segoe UI", 8),
+                     bg="#ffffff", fg="#888888", anchor="w").pack(anchor="w")
+
+            sl = tk.Label(info, text=human(sz) if sz > 0 else "(无)",
+                           font=("Segoe UI", 8, "bold"), bg="#ffffff",
+                           fg="#e63946" if sz > 50 * 1024 * 1024 else "#999999",
+                           anchor="e")
+            sl.pack(side=tk.RIGHT, anchor="e")
+
+        bot = tk.Frame(main_frame, bg="#ffffff")
+        bot.pack(fill=tk.X, pady=(10, 0))
+        exec_result = [None]
+
+        def do_execute():
+            selected = []
+            for j, (lbl, desc, sz, pats, _) in enumerate(scan_results):
+                if check_vars[j].get():
+                    selected.append((lbl, desc, pats))
+            if not selected:
+                messagebox.showwarning("提示", "请至少选择一项进行清理。", parent=sel_win)
+                return
+            sel_win.destroy()
+            exec_result[0] = selected
+            self._execute_clean_cache(selected)
+
+        def do_cancel():
+            sel_win.destroy()
+
+        ttk.Button(bot, text="✅ 开始清理", command=do_execute).pack(side=tk.RIGHT, padx=(8, 0))
+        ttk.Button(bot, text="取消", command=do_cancel).pack(side=tk.RIGHT)
+        sel_win.wait_window()
+        sel_win.unbind_all("<MouseWheel>")
+
+    def _execute_clean_cache(self, selected_targets):
+        """执行实际的缓存清理操作。"""
+        import glob as _glob
+        import shutil
 
         total_freed = 0
         details = []
-        for label, patterns, desc in targets:
+
+        for label, patterns, desc in selected_targets:
             freed = 0
             count = 0
             for pat in patterns:
-                for fpath in _glob.glob(pat):
-                    try:
-                        if os.path.isfile(fpath):
-                            sz = os.path.getsize(fpath)
-                            os.remove(fpath)
-                            freed += sz
-                            count += 1
-                        elif os.path.isdir(fpath):
-                            shutil.rmtree(fpath, ignore_errors=True)
-                            count += 1
-                    except (OSError, PermissionError, FileNotFoundError):
-                        continue
+                try:
+                    expanded = os.path.expandvars(pat)
+                    for fpath in _glob.glob(expanded):
+                        try:
+                            if os.path.isfile(fpath):
+                                sz = os.path.getsize(fpath)
+                                os.remove(fpath)
+                                freed += sz
+                                count += 1
+                            elif os.path.isdir(fpath):
+                                shutil.rmtree(fpath, ignore_errors=True)
+                                count += 1
+                        except (OSError, PermissionError, FileNotFoundError):
+                            continue
+                except (OSError, PermissionError):
+                    continue
             total_freed += freed
             if freed > 0 or count > 0:
-                details.append(f"  {label}: 清理 {count} 项, "
-                               f"释放 {human_size(freed)}")
+                details.append(f"  {label}: {human_size(freed)} ({count} 项)")
 
-        # 报告结果
-        report = (f"清理完成！共释放: **{human_size(total_freed)}**\n\n"
+        report = (f"✅ 清理完成！共释放: **{human_size(total_freed)}**\n\n"
                   + "\n".join(details) if details else "未找到可清理的文件。")
-        messagebox.showinfo("缓存清理报告", report)
-
-        # 刷新覆盖层数据（清理后数值应变大）
+        messagebox.showinfo("空间回收报告", report)
         self._auto_refresh()
 
     def _update_settings_panel(self, flt, cfg, overlay=None):
