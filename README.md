@@ -104,6 +104,10 @@ uwfmgr.exe
 
 ## Changelog / 更新日志
 
+### v2.16 (2026-08-20)
+- **🚀 Dism++-Level Space Recovery** — Complete rewrite: 7→29 cleanup items across 6 categories (System Temp, Windows Update, Logs, Browser Cache, System Acceleration, App Caches). Interactive selection dialog with per-item size display.
+  **🚀 Dism++ 级别空间回收** — 完整重写：7→29 项清理，分6大类。交互式选择对话框，每项显示大小。
+
 ### v2.15 (2026-08-20)
 - **🐛 Fix: Tray Icon Stuck at 100** — `MaximumSize` was read from wrong WMI class (`UWF_Overlay` instead of `UWF_OverlayConfig`). Fixed data source.
   **🐛 修复：图标卡在 100** — `MaximumSize` 读错了 WMI 类（从 UWF_Overlay 而非 UWF_OverlayConfig）。修正数据源。
