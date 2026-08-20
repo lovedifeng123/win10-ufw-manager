@@ -403,6 +403,70 @@ class UWFCore:
             "请在「文件分析」或「写入日志」中对单个文件使用「提交删除」，"
             "或重启计算机以丢弃覆盖层。")
 
+    # ==================== 批量操作（避免逐个弹 UAC）====================
+
+    def batch_run(self, commands):
+        """批量执行 uwfmgr 命令（每条为参数列表）。
+
+        管理员环境：直接逐条 _run_direct 执行（无 UAC 弹窗）。
+        非管理员环境：把所有命令合并成**一条** `cmd /c "uwfmgr ... & uwfmgr ..."`，
+        通过 runas 仅弹**一次** UAC；由于父进程已提升，子进程 uwfmgr
+        继承提升令牌，不再逐个弹窗。这样清理时可一次性固化几十个目录的删除。
+        """
+        if not commands:
+            return
+        if _is_admin():
+            for args in commands:
+                try:
+                    _run_direct(args)
+                except Exception:
+                    # 单条失败不影响其余（如某目录不在覆盖层中）
+                    pass
+            return
+        global UWFMGR
+        if UWFMGR is None:
+            UWFMGR = _resolve_uwfmgr()
+        parts = []
+        for args in commands:
+            q = " ".join(f'"{a}"' for a in args)
+            parts.append(f'"{UWFMGR}" {q}')
+        line = " & ".join(parts)
+        try:
+            info = win32api.ShellExecuteEx(
+                fMask=win32con.SEE_MASK_NOCLOSEPROCESS,
+                hwnd=0, lpVerb="runas", lpFile="cmd.exe",
+                lpParameters=f'/c "{line}"', nShow=0)
+        except Exception as e:
+            raise UWFError(f"无法请求管理员权限执行 UWF 操作: {e}")
+        hproc = info.get("hProcess")
+        if hproc:
+            try:
+                win32event.WaitForSingleObject(hproc, 60000)
+            except Exception:
+                pass
+
+    def batch_commit(self, commit_dirs, commit_files):
+        """批量提交删除：把若干目录/文件的删除固化到物理盘。
+
+        commit_dirs: 目录完整路径列表（提交该目录树内所有删除记录）
+        commit_files: 单文件完整路径列表（commit-delete）
+        """
+        cmds = []
+        for d in sorted(set(commit_dirs or [])):
+            cmds.append(["file", "commit", _full_path("c", d)])
+        for f in sorted(set(commit_files or [])):
+            cmds.append(["file", "commit-delete", _full_path("c", f)])
+        if cmds:
+            self.batch_run(cmds)
+
+    def batch_exclude(self, drive_letter, paths):
+        """批量加入 UWF 排除列表（目录或文件均可）。"""
+        cmds = []
+        for p in sorted(set(paths or [])):
+            cmds.append(["file", "add-exclusion", _full_path(drive_letter, p)])
+        if cmds:
+            self.batch_run(cmds)
+
     # ==================== HORM（CLI）====================
 
     def enable_horm(self):

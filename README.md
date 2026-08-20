@@ -104,6 +104,17 @@ uwfmgr.exe
 
 ## Changelog / 更新日志
 
+### v2.18 (2026-08-20)
+- **🚀 清理缓存释放覆盖层 — 彻底重做，不再卡死 + 全程进度条** — 之前点「开始清理」后程序直接"未响应"直到结束，根因是扫描/删除/提交都在 UI 主线程同步执行。现在：
+  - **扫描阶段**：后台线程扫描受保护 C: 盘的缓存占用，进度条实时显示扫描进度（参考 Dism++：先扫描有多少可清理，再选择）。
+  - **清理阶段**：后台线程删除文件，**字节级百分比进度**（0%→100%，100% 即完成），并实时显示「已释放 X / 共 Y」。
+  - **可取消**：清理/扫描中可随时点「取消」安全中止。
+  - **UI 永不卡死**：所有重 I/O 都在独立线程，通过队列把进度回传主线程绘制进度条。
+  - **单次提权**：多个目录的 UWF 提交/排除合并为**一次** UAC 提权（不再逐个弹窗）。
+  - 新增 UWF 专属开关：「提交删除」（立即释放覆盖层、重启保留）与「加入 UWF 排除」（重启后永久生效，临时目录不再占用覆盖层）。
+  - 功能更名为「**清理缓存释放覆盖层**」。
+- **🚀 Cleanup Overlay — Rebuilt, no more freeze + full progress** — Previously clicking "Start" froze the UI until done (scan/delete/commit ran synchronously on the UI thread). Now: background-thread **scan** with live progress; background-thread **clean** with byte-level percentage (0%→100%, 100% = done) and cancel support; UI never blocks; UWF commit/exclusion batched into a **single** UAC prompt; new UWF toggles (commit deletion / add exclusion); feature renamed to "Cleanup Overlay".
+
 ### v2.17 (2026-08-20)
 - **🔧 Critical Fix: Cleanup Now Actually Frees Overlay** — Under UWF protection, normal deletion only records "deleted" in the overlay; the physical file persists and returns after reboot, and the overlay is NOT freed (this is why v2.16 cleanup "had no effect"). Now after deleting temp/cache files, the tool calls `uwfmgr file commit` / `commit-delete` to **commit the deletion to the physical volume**, so cleanup truly frees space and survives reboot. Added UWF-status detection + bilingual warning in the dialog.
   **🔧 关键修复：清理缓存现在真正释放覆盖层** — 在 UWF 保护下，普通删除只是把"已删除"记录写入覆盖层，物理文件仍在、重启后恢复、覆盖层不释放（这正是 v2.16 清理"没用"的原因）。现在删除临时/缓存文件后，工具调用 `uwfmgr file commit` / `commit-delete` **把删除固化到物理盘**，清理真正释放空间且重启后保留。清理对话框新增 UWF 状态检测与中英双语提示。
