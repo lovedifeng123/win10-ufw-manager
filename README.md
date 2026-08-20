@@ -104,6 +104,16 @@ uwfmgr.exe
 
 ## Changelog / 更新日志
 
+### v2.12 (2026-08-20)
+- **🐛 Critical Fix: Enable/Disable Protection Button** — The "开启保护/关闭保护" button only toggled UWF filter (`enable_filter`/`disable_filter`) but **never touched volume protection state** (`protect_volume`/`unprotect_volume`). This caused "关闭保护" to leave volumes protected after reboot — the button was effectively non-functional. Rewrote `on_toggle()` to operate on **both volumes AND filter**: when disabling, queries all `CurrentProtected=True` volumes and calls `unprotect_volume()` on each, then `disable_filter()`; when enabling, determines target volumes (from NextProtected config or default C:), calls `protect_volume()` on each, then `enable_filter()`. Detailed result dialog now shows which drives were affected.
+  **🐛 关键修复：开启/关闭保护按钮** — 「开启保护/关闭保护」按钮仅操作 UWF 过滤器总开关，**完全没有处理卷保护状态**。导致「关闭保护」后重启仍保护——该按钮实际无效。重写 on_toggle() 使其同时操作**卷保护+过滤器**：关闭时查询所有 CurrentProtected=True 的卷并逐个 unprotect_volume，再 disable_filter；开启时确定目标盘符（从 NextProtected 配置或默认 C:）并逐个 protect_volume，再 enable_filter。结果对话框显示受影响的盘符。
+
+### v2.11 (2026-08-19)
+- **🔧 Tray Icon Fix (4th approach — finally works)** — After v2.8(ARGB→black), v2.9(AND mask→white), v2.10(GDI→black) all failed, found that `CreateIconIndirect` has rendering issues on this system. Final solution: PIL renders text → saves as `.ico` file → loads via `LoadImageW(LR_LOADFROMFILE)`. Tested with 12-second live display. Icon cache stored in `.icon_cache/` dir (gitignored).
+  **🔧 托盘图标修复（第4种方案——终于正常）** — 经历 v2.8(ARGB黑块)、v2.9(AND mask白块)、v2.10(GDI黑块) 三次失败后，确认 CreateIconIndirect 在本系统有渲染兼容性问题。最终方案：PIL 渲染文字→存为 .ico 文件→LoadImageW(LR_LOADFROMFILE) 加载。经 12 秒实测验证通过。图标缓存存于 .icon_cache/ 目录（已 gitignore）。
+- **⚠️ Known Issue: Enable/Disable protection button broken** — Fixed in v2.12.
+  **⚠️ 已知问题：开启/关闭保护按钮无效** — 已在 v2.12 修复。
+
 ### v2.10 (2026-08-19)
 - **🔧 Tray Icon Fully Rewritten (Pure GDI)** — Abandoned PIL/Pillow completely. Now uses pure Windows GDI API: `CreateDIBSection`(32-bit BGRA) → `CreateFontW`(Arial Bold) → `TextOutW` → `CreateIconIndirect`. Fixes black-square (v2.8) and white-square (v2.9) bugs permanently. Icon shows golden numbers on dark gray background reliably.
   **🔧 托盘图标彻底重写（纯 GDI）** — 完全放弃 PIL/Pillow。改用纯 Windows GDI API 绘制：CreateDIBSection(32-bit BGRA) → CreateFontW(Arial Bold) → TextOutW → CreateIconIndirect。永久修复黑块(v2.8)和白块(v2.9)问题。图标可靠显示深灰底+金黄数字。
