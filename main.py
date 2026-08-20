@@ -1,5 +1,5 @@
 """
-UWF Manager Pro v2.10 - 主程序（tkinter UI）
+UWF Manager Pro v2.12 - 主程序（tkinter UI）
 功能：
   1. 状态面板：启用/禁用/HORM/关机待处理
   2. 覆盖层内存监控（已用/总容量/阈值变色）← 修复数据显示
@@ -375,7 +375,7 @@ class UWFApp:
 
     # ==================== UI 布局 ====================
     def _setup_ui(self):
-        self.root.title("UWF Manager Pro v2.10")
+        self.root.title("UWF Manager Pro v2.12")
         self.root.geometry("1100x800")
         self.root.configure(bg=BG)
         self.root.minsize(900, 680)
@@ -396,7 +396,7 @@ class UWFApp:
         title_bar = tk.Frame(self.root, bg=ACCENT, height=48)
         title_bar.pack(fill=tk.X)
         title_bar.pack_propagate(False)
-        tk.Label(title_bar, text="UWF Manager Pro v2.10",
+        tk.Label(title_bar, text="UWF Manager Pro v2.12",
                  font=FONT_TITLE, fg="white", bg=ACCENT).pack(
             side=tk.LEFT, padx=18, pady=8)
         self.lbl_admin = tk.Label(title_bar, text="", font=FONT_BOLD,
@@ -1482,25 +1482,102 @@ class UWFApp:
             self.tree_vol.insert("", "end", values=(
                 dl, prot, cons_s, nxt_s, cp_s))
 
-    # ==================== 操作：启用/禁用 ====================
+    # ==================== 操作：开启/关闭保护（含卷保护+过滤器）====================
     def on_toggle(self):
-        target = "禁用" if self.lbl_status.cget("text") == "已启用" else "启用"
+        """开启/关闭 UWF 保护。
+
+        修复 v2.11 bug：旧版只调用 enable_filter()/disable_filter()（仅操作
+        过滤器总开关），完全不处理卷保护状态，导致「关闭保护」后重启仍保护。
+
+        正确逻辑：
+          关闭保护 → 查询所有 CurrentProtected=True 的卷 → 逐个 unprotect_volume
+                     → disable_filter → 重启后生效
+          开启保护 → 查询需保护的卷（NextProtected / 当前保护 / 默认 C:）
+                     → 逐个 protect_volume → enable_filter → 重启后生效
+        """
 
         def op():
             c = uwf_core.UWFCore()
             c.connect()
-            if target == "禁用":
-                c.disable_filter()
-            else:
-                c.enable_filter()
-            return target
+            flt = c.get_filter()
+            vols = c.get_volumes()
 
-        def done(t):
-            messagebox.showinfo("成功", f"UWF 已设为{t}，重启后生效。")
+            # 当前受保护的卷列表
+            protected_vols = [
+                v["DriveLetter"] for v in vols if v.get("CurrentProtected")
+            ]
+            filter_on = bool(flt.get("CurrentEnabled"))
+
+            # 判断模式：有卷在保护中 或 过滤器开启 → 执行关闭
+            if filter_on or protected_vols:
+                # ====== 关闭保护 ======
+                actions = []
+                # 1. 逐个取消卷保护
+                for drv in protected_vols:
+                    try:
+                        c.unprotect_volume(drv)
+                        actions.append(f"✅ {drv} 已取消保护")
+                    except Exception as e:
+                        actions.append(f"❌ {drv} 取消失败: {e}")
+                # 2. 关闭过滤器
+                try:
+                    c.disable_filter()
+                    actions.append("✅ UWF 过滤器已关闭")
+                except Exception as e:
+                    actions.append(f"❌ 关闭过滤器失败: {e}")
+                return ("关闭", actions, protected_vols)
+            else:
+                # ====== 开启保护 ======
+                actions = []
+                # 确定要保护的盘符：优先 NextProtected=True → 当前已保护 → 默认 C:
+                to_protect = []
+                for v in vols:
+                    dl = v["DriveLetter"]
+                    if v.get("NextProtected") is True and dl not in to_protect:
+                        to_protect.append(dl)
+                    elif v.get("CurrentProtected") and dl not in to_protect:
+                        to_protect.append(dl)
+                if not to_protect:
+                    to_protect = ["C:"]
+                # 1. 逐个设置卷保护
+                for drv in to_protect:
+                    try:
+                        c.protect_volume(drv)
+                        actions.append(f"✅ {drv} 设为保护")
+                    except Exception as e:
+                        actions.append(f"❌ {drv} 保护失败: {e}")
+                # 2. 启用过滤器
+                try:
+                    c.enable_filter()
+                    actions.append("✅ UWF 过滤器已启用")
+                except Exception as e:
+                    actions.append(f"❌ 启用过滤器失败: {e}")
+                return ("开启", actions, to_protect)
+
+        def done(result):
+            mode, details, drives = result[0], result[1], result[2]
+            drive_list = ", ".join(drives) if drives else "无"
+            if mode == "关闭":
+                title = "关闭保护"
+                msg = (
+                    f"UWF 保护已关闭！\n\n"
+                    f"已取消保护的盘符: {drive_list}\n\n"
+                    + "\n".join(details)
+                    + "\n\n⚠️ 请重启计算机以使更改生效。"
+                )
+            else:
+                title = "开启保护"
+                msg = (
+                    f"UWF 保护已开启！\n\n"
+                    f"将保护的盘符: {drive_list}\n\n"
+                    + "\n".join(details)
+                    + "\n\n⚠️ 请重启计算机以使更改生效。"
+                )
+            messagebox.showinfo(title, msg)
             self.refresh()
 
         def fail(m):
-            messagebox.showerror("失败", m)
+            messagebox.showerror("操作失败", m)
 
         self._run_com("status_gen", op, done, fail)
 
