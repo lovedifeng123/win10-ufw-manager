@@ -104,6 +104,10 @@ uwfmgr.exe
 
 ## Changelog / 更新日志
 
+### v2.17 (2026-08-20)
+- **🔧 Critical Fix: Cleanup Now Actually Frees Overlay** — Under UWF protection, normal deletion only records "deleted" in the overlay; the physical file persists and returns after reboot, and the overlay is NOT freed (this is why v2.16 cleanup "had no effect"). Now after deleting temp/cache files, the tool calls `uwfmgr file commit` / `commit-delete` to **commit the deletion to the physical volume**, so cleanup truly frees space and survives reboot. Added UWF-status detection + bilingual warning in the dialog.
+  **🔧 关键修复：清理缓存现在真正释放覆盖层** — 在 UWF 保护下，普通删除只是把"已删除"记录写入覆盖层，物理文件仍在、重启后恢复、覆盖层不释放（这正是 v2.16 清理"没用"的原因）。现在删除临时/缓存文件后，工具调用 `uwfmgr file commit` / `commit-delete` **把删除固化到物理盘**，清理真正释放空间且重启后保留。清理对话框新增 UWF 状态检测与中英双语提示。
+
 ### v2.16 (2026-08-20)
 - **🚀 Dism++-Level Space Recovery** — Complete rewrite: 7→29 cleanup items across 6 categories (System Temp, Windows Update, Logs, Browser Cache, System Acceleration, App Caches). Interactive selection dialog with per-item size display.
   **🚀 Dism++ 级别空间回收** — 完整重写：7→29 项清理，分6大类。交互式选择对话框，每项显示大小。

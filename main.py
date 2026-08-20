@@ -1,5 +1,5 @@
 """
-UWF Manager Pro v2.16 - 主程序（tkinter UI）
+UWF Manager Pro v2.17 - 主程序（tkinter UI）
 功能：
   1. 状态面板：启用/禁用/HORM/关机待处理
   2. 覆盖层内存监控（已用/总容量/阈值变色）← 修复数据显示
@@ -387,7 +387,7 @@ class UWFApp:
 
     # ==================== UI 布局 ====================
     def _setup_ui(self):
-        self.root.title("UWF Manager Pro v2.16")
+        self.root.title("UWF Manager Pro v2.17")
         self.root.geometry("1100x800")
         self.root.configure(bg=BG)
         self.root.minsize(900, 680)
@@ -408,7 +408,7 @@ class UWFApp:
         title_bar = tk.Frame(self.root, bg=ACCENT, height=48)
         title_bar.pack(fill=tk.X)
         title_bar.pack_propagate(False)
-        tk.Label(title_bar, text="UWF Manager Pro v2.16",
+        tk.Label(title_bar, text="UWF Manager Pro v2.17",
                  font=FONT_TITLE, fg="white", bg=ACCENT).pack(
             side=tk.LEFT, padx=18, pady=8)
         self.lbl_admin = tk.Label(title_bar, text="", font=FONT_BOLD,
@@ -1190,9 +1190,18 @@ class UWFApp:
 
     def on_clean_cache(self):
         """执行深度缓存清理（参考 Dism++ 空间回收原理）：删除临时文件/浏览器缓存/
-        Windows更新缓存/系统日志/应用程序缓存等，释放 UWF 覆盖层空间。"""
+        Windows更新缓存/系统日志/应用程序缓存等，并在 UWF 保护下提交删除以真正
+        释放覆盖层空间。"""
         import glob as _glob
         import shutil
+
+        # 判断 UWF 是否启用（决定清理后是否需“提交删除”才能真正释放空间）
+        try:
+            c0 = uwf_core.UWFCore()
+            c0.connect()
+            self.ufw_enabled = bool((c0.get_filter() or {}).get("CurrentEnabled"))
+        except Exception:
+            self.ufw_enabled = getattr(self, "ufw_enabled", False)
 
         # ==================== 清理规则定义（参考 Dism++ Data.xml）====================
         # 每项: (标签, 路径模式列表, 说明, 是否默认勾选)
@@ -1369,6 +1378,13 @@ class UWFApp:
                  text=f"共扫描到 {human(total_scan)} 可释放空间（参考 Dism++ 空间回收）",
                  font=("Segoe UI", 9), bg="#ffffff", fg="#666666").pack(anchor="w", pady=(2, 8))
 
+        if getattr(self, "ufw_enabled", False):
+            tk.Label(main_frame,
+                     text="⚠️ 检测到 UWF 保护已启用：清理后系统会「提交删除」让释放"
+                          "真正生效（可能请求一次管理员权限）。提交后重启也保留。",
+                     font=("Segoe UI", 8), bg="#FFF8E1", fg="#B26A00",
+                     wraplength=540, justify="left").pack(anchor="w", pady=(0, 6))
+
         btn_row = tk.Frame(main_frame, bg="#ffffff")
         btn_row.pack(fill=tk.X, pady=(0, 4))
         var_all = tk.BooleanVar(value=True)
@@ -1469,19 +1485,35 @@ class UWFApp:
         sel_win.unbind_all("<MouseWheel>")
 
     def _execute_clean_cache(self, selected_targets):
-        """执行实际的缓存清理操作。"""
+        """执行实际的缓存清理操作，并在 UWF 保护下提交删除以真正释放空间。
+
+        关键原理：在 UWF 保护下，普通删除只是把“已删除”记录写入覆盖层，
+        物理盘文件仍在、重启后会恢复，覆盖层也不会真正释放。
+        必须用 uwfmgr file commit / commit-delete 把删除**固化**到物理盘，
+        清理才真正有效（这正是 Dism++ 不会做、但 UWF 管理器能做的）。
+        """
         import glob as _glob
         import shutil
 
         total_freed = 0
         details = []
+        commit_dirs = set()      # 目录/文件通配 → 提交该目录（一次调用）
+        commit_files = []        # 具体单文件 → 提交删除（commit-delete）
 
         for label, patterns, desc in selected_targets:
             freed = 0
             count = 0
             for pat in patterns:
+                expanded = os.path.expandvars(pat)
+                is_dir_wild = expanded.endswith("*")
+                # 收集 UWF 提交目标（只提交明确的子目录/单文件，避免大根目录）
+                if is_dir_wild:
+                    commit_dirs.add(os.path.dirname(expanded.rstrip("\\/")).rstrip("\\/"))
+                elif "*" in expanded:
+                    commit_dirs.add(os.path.dirname(expanded).rstrip("\\/"))
+                else:
+                    commit_files.append(expanded)
                 try:
-                    expanded = os.path.expandvars(pat)
                     for fpath in _glob.glob(expanded):
                         try:
                             if os.path.isfile(fpath):
@@ -1499,6 +1531,42 @@ class UWFApp:
             total_freed += freed
             if freed > 0 or count > 0:
                 details.append(f"  {label}: {human_size(freed)} ({count} 项)")
+
+        # ==================== UWF 提交：让删除真正生效 ====================
+        commit_done = 0
+        commit_fail = 0
+        uwf_on = False
+        try:
+            cc = uwf_core.UWFCore()
+            cc.connect()
+            uwf_on = bool((cc.get_filter() or {}).get("CurrentEnabled"))
+        except Exception:
+            cc = None
+
+        if uwf_on and cc is not None:
+            # 先提交目录（一次调用提交该目录树内所有删除记录）
+            for d in sorted(commit_dirs):
+                try:
+                    cc.commit_file("c", d)
+                    commit_done += 1
+                except Exception:
+                    commit_fail += 1
+            # 再提交具体单文件的删除
+            for f in commit_files:
+                try:
+                    cc.commit_file_deletion("c", f)
+                    commit_done += 1
+                except Exception:
+                    commit_fail += 1
+            if commit_done:
+                if commit_fail == 0:
+                    details.append(
+                        f"  ✅ UWF 提交：已固化 {commit_done} 项删除到物理盘"
+                        f"（重启后保留，真正释放覆盖层）")
+                else:
+                    details.append(
+                        f"  ⚠️ UWF 提交：{commit_done} 项成功, {commit_fail} 项失败"
+                        f"（可重启计算机以丢弃覆盖层）")
 
         report = (f"✅ 清理完成！共释放: **{human_size(total_freed)}**\n\n"
                   + "\n".join(details) if details else "未找到可清理的文件。")
