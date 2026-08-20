@@ -1,5 +1,5 @@
 """
-UWF Manager Pro v2.14 - 主程序（tkinter UI）
+UWF Manager Pro v2.15 - 主程序（tkinter UI）
 功能：
   1. 状态面板：启用/禁用/HORM/关机待处理
   2. 覆盖层内存监控（已用/总容量/阈值变色）← 修复数据显示
@@ -387,7 +387,7 @@ class UWFApp:
 
     # ==================== UI 布局 ====================
     def _setup_ui(self):
-        self.root.title("UWF Manager Pro v2.14")
+        self.root.title("UWF Manager Pro v2.15")
         self.root.geometry("1100x800")
         self.root.configure(bg=BG)
         self.root.minsize(900, 680)
@@ -408,7 +408,7 @@ class UWFApp:
         title_bar = tk.Frame(self.root, bg=ACCENT, height=48)
         title_bar.pack(fill=tk.X)
         title_bar.pack_propagate(False)
-        tk.Label(title_bar, text="UWF Manager Pro v2.14",
+        tk.Label(title_bar, text="UWF Manager Pro v2.15",
                  font=FONT_TITLE, fg="white", bg=ACCENT).pack(
             side=tk.LEFT, padx=18, pady=8)
         self.lbl_admin = tk.Label(title_bar, text="", font=FONT_BOLD,
@@ -1005,7 +1005,7 @@ class UWFApp:
                 self.lbl_avail_space.config(
                     text=f"可用空间: {avail_mb:.0f} MB")
             # 托盘显示剩余内存
-            self._update_tray(flt, overlay)
+            self._update_tray(flt, overlay, cfg)
         elif cfg.get("MaximumSize"):
             self.lbl_overlay.config(text=f"上限 {cfg['MaximumSize']} MB")
             self.lbl_overlay_detail.config(text="（无实时用量数据）")
@@ -1045,13 +1045,14 @@ class UWFApp:
             text=f"最后刷新: {time.strftime('%H:%M:%S')}  |  "
                  f"root\\standardcimv2\\embedded ✓")
 
-    def _update_tray(self, flt, overlay):
+    def _update_tray(self, flt, overlay, cfg=None):
         """托盘图标 + tooltip 同步更新（动态数字图标 + 剩余内存提示）。"""
         try:
             enabled = flt.get("CurrentEnabled")
             ov = overlay or {}
             avail = ov.get("AvailableSpace") or 0
-            max_sz = ov.get("MaximumSize") or 0
+            # MaximumSize 在 UWF_OverlayConfig（cfg）里，不在 UWF_Overlay（overlay）里
+            max_sz = (cfg or {}).get("MaximumSize") or 0
             used = ov.get("OverlayConsumption") or 0
 
             # --- 动态图标文字（显示剩余百分比整数，最大化字号）---
@@ -1470,7 +1471,7 @@ class UWFApp:
             self.lbl_overlay.config(text="—")
             self.lbl_overlay_detail.config(text="")
         # 托盘显示剩余内存（实时）
-        self._update_tray(flt, overlay)
+        self._update_tray(flt, overlay, cfg)
         # --- 卷列表（实时）---
         for i in self.tree_vol.get_children():
             self.tree_vol.delete(i)
