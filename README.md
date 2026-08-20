@@ -104,6 +104,12 @@ uwfmgr.exe
 
 ## Changelog / 更新日志
 
+### v2.13 (2026-08-20)
+- **✨ Tray Icon: Remaining Percentage** — Icon now displays remaining overlay percentage (e.g. `16.7%`) instead of absolute MB/GB. Tooltip shows `剩余 X% / 总容量 Y MB`.
+  **✨ 托盘图标改为剩余百分比** — 显示剩余百分比（如 `16.7%`）而非 MB/GB 绝对值。悬浮提示显示 `剩余 X% / 总容量 Y MB`。
+- **🔤 Larger & Sharper Font** — Icon source size 64→128px + adaptive font (base 0.62). `16.7%` renders at 41px (was 19px). Auto-shrinks only if text overflows.
+  **🔤 更大更清晰字号** — 图标源 64→128px + 自适应字号（基准 0.62）。`16.7%` 字号 19px→41px。仅超出时才自动缩小。
+
 ### v2.12 (2026-08-20)
 - **🐛 Critical Fix: Enable/Disable Protection Button** — The "开启保护/关闭保护" button only toggled UWF filter (`enable_filter`/`disable_filter`) but **never touched volume protection state** (`protect_volume`/`unprotect_volume`). This caused "关闭保护" to leave volumes protected after reboot — the button was effectively non-functional. Rewrote `on_toggle()` to operate on **both volumes AND filter**: when disabling, queries all `CurrentProtected=True` volumes and calls `unprotect_volume()` on each, then `disable_filter()`; when enabling, determines target volumes (from NextProtected config or default C:), calls `protect_volume()` on each, then `enable_filter()`. Detailed result dialog now shows which drives were affected.
   **🐛 关键修复：开启/关闭保护按钮** — 「开启保护/关闭保护」按钮仅操作 UWF 过滤器总开关，**完全没有处理卷保护状态**。导致「关闭保护」后重启仍保护——该按钮实际无效。重写 on_toggle() 使其同时操作**卷保护+过滤器**：关闭时查询所有 CurrentProtected=True 的卷并逐个 unprotect_volume，再 disable_filter；开启时确定目标盘符（从 NextProtected 配置或默认 C:）并逐个 protect_volume，再 enable_filter。结果对话框显示受影响的盘符。
