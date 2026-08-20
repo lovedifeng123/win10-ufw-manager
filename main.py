@@ -1,5 +1,5 @@
 """
-UWF Manager Pro v2.12 - 主程序（tkinter UI）
+UWF Manager Pro v2.13 - 主程序（tkinter UI）
 功能：
   1. 状态面板：启用/禁用/HORM/关机待处理
   2. 覆盖层内存监控（已用/总容量/阈值变色）← 修复数据显示
@@ -83,7 +83,7 @@ class SystemTrayIcon:
     ICON_BG = (45, 45, 45)       # #2D2D2D 深灰底
     ICON_FG_NORMAL = (230, 184, 0)   # #E6B800 金黄（正常）
     ICON_FG_WARN = (255, 80, 60)     # #FF503C 红色（<20% 剩余）
-    ICON_SIZE = 64                  # 64x64 高清，系统自动缩放
+    ICON_SIZE = 128                 # 128x128 高清源（缩放到托盘更锐利，百分比字号更大）
 
     def __init__(self, parent_app):
         self.app = parent_app
@@ -201,14 +201,24 @@ class SystemTrayIcon:
         img = Image.new("RGB", (size, size), bg)
         draw = ImageDraw.Draw(img)
 
-        # 加载字体
+        # 加载字体（自适应字号：在放得下前提下尽量大，基准比旧版更大）
         font = None
         for font_name in ("C:/Windows/Fonts/arial.ttf",
                           "C:/Windows/Fonts/segoeui.ttf",
                           "C:/Windows/Fonts/tahoma.ttf"):
             try:
-                font = ImageFont.truetype(font_name, int(size * 0.50))
-                break
+                # 从大到小尝试，直到文字宽度 ≤ 92% 图标宽度
+                fs = int(size * 0.62)  # 比旧版 0.50 更大
+                while fs > 8:
+                    f = ImageFont.truetype(font_name, fs)
+                    bbox = draw.textbbox((0, 0), text, font=f)
+                    tw = bbox[2] - bbox[0]
+                    if tw <= size * 0.92:
+                        font = f
+                        break
+                    fs -= 2
+                if font is not None:
+                    break
             except Exception:
                 continue
         if font is None:
@@ -232,8 +242,10 @@ class SystemTrayIcon:
             base_dir = os.path.dirname(os.path.abspath(__file__))
         ico_dir = os.path.join(base_dir, ".icon_cache")
         os.makedirs(ico_dir, exist_ok=True)
+        # 文件名只保留字母数字，避免 % 等字符在路径中歧义
+        safe = "".join(c if c.isalnum() else "_" for c in text)
         ico_path = os.path.join(ico_dir,
-            f"tray_{'w' if warn else 'n'}_{text.replace('.','p')}.ico")
+            f"tray_{'w' if warn else 'n'}_{safe}.ico")
         img.save(ico_path, format="ICO", sizes=[(size, size)])
 
         # --- 3. 用 LoadImageW 从文件加载（Windows 最可靠的图标加载方式）---
@@ -375,7 +387,7 @@ class UWFApp:
 
     # ==================== UI 布局 ====================
     def _setup_ui(self):
-        self.root.title("UWF Manager Pro v2.12")
+        self.root.title("UWF Manager Pro v2.13")
         self.root.geometry("1100x800")
         self.root.configure(bg=BG)
         self.root.minsize(900, 680)
@@ -396,7 +408,7 @@ class UWFApp:
         title_bar = tk.Frame(self.root, bg=ACCENT, height=48)
         title_bar.pack(fill=tk.X)
         title_bar.pack_propagate(False)
-        tk.Label(title_bar, text="UWF Manager Pro v2.12",
+        tk.Label(title_bar, text="UWF Manager Pro v2.13",
                  font=FONT_TITLE, fg="white", bg=ACCENT).pack(
             side=tk.LEFT, padx=18, pady=8)
         self.lbl_admin = tk.Label(title_bar, text="", font=FONT_BOLD,
@@ -1042,18 +1054,15 @@ class UWFApp:
             max_sz = ov.get("MaximumSize") or 0
             used = ov.get("OverlayConsumption") or 0
 
-            # --- 动态图标文字 ---
-            if enabled and avail > 0:
-                if max_sz > 0:
-                    pct = avail / max_sz * 100
-                    if avail >= 1024:
-                        icon_text = f"{avail / 1024:.1f}G"
-                    else:
-                        icon_text = f"{avail:.0f}M"
-                else:
-                    pct = 100
-                    icon_text = f"{avail:.0f}M" if avail >= 100 else f"{avail:.0f}"
+            # --- 动态图标文字（显示剩余百分比）---
+            if enabled and avail > 0 and max_sz > 0:
+                pct = avail / max_sz * 100
+                icon_text = f"{pct:.1f}%"
                 warn = (pct < 20)  # 剩余 < 20% 变红
+            elif enabled and avail > 0:
+                # 有可用空间但读不到上限 → 无法算百分比
+                icon_text = "100%"
+                warn = False
             elif not enabled:
                 icon_text = "OFF"
                 warn = False
@@ -1066,7 +1075,7 @@ class UWFApp:
             txt = (f"UWF {'已启用' if enabled else '已禁用'}  "
                    f"剩余 {avail:.0f} MB（已用 {used:.0f} MB）")
             if max_sz > 0:
-                txt += f"  总容量 {max_sz:.0f} MB"
+                txt += f"  剩余 {avail / max_sz * 100:.1f}% / 总容量 {max_sz:.0f} MB"
             self.tray.update_tooltip(txt)
 
             # --- 覆盖层使用率阈值检测 → 缓存清理提醒 ---
