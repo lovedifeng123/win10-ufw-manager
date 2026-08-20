@@ -104,6 +104,10 @@ uwfmgr.exe
 
 ## Changelog / 更新日志
 
+### v2.14 (2026-08-20)
+- **🔧 Tray Icon: Integer % + Larger Font** — Changed from `16.7%` to integer `17` (nearly 2x larger font). Font base 0.62→0.88.
+  **🔧 托盘图标：整数百分比 + 更大字号** — 从 `16.7%` 改为整数 `17`（字号近两倍）。字号基准 0.62→0.88。
+
 ### v2.13 (2026-08-20)
 - **✨ Tray Icon: Remaining Percentage** — Icon now displays remaining overlay percentage (e.g. `16.7%`) instead of absolute MB/GB. Tooltip shows `剩余 X% / 总容量 Y MB`.
   **✨ 托盘图标改为剩余百分比** — 显示剩余百分比（如 `16.7%`）而非 MB/GB 绝对值。悬浮提示显示 `剩余 X% / 总容量 Y MB`。
