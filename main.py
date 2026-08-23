@@ -1,5 +1,5 @@
 """
-UWF Manager Pro v2.18 - 主程序（tkinter UI）
+UWF Manager Pro v2.19 - 主程序（tkinter UI）
 功能：
   1. 状态面板：启用/禁用/HORM/关机待处理
   2. 覆盖层内存监控（已用/总容量/阈值变色）← 修复数据显示
@@ -453,7 +453,7 @@ class UWFApp:
 
     # ==================== UI 布局 ====================
     def _setup_ui(self):
-        self.root.title("UWF Manager Pro v2.18")
+        self.root.title("UWF Manager Pro v2.19")
         self.root.geometry("1100x800")
         self.root.configure(bg=BG)
         self.root.minsize(900, 680)
@@ -474,7 +474,7 @@ class UWFApp:
         title_bar = tk.Frame(self.root, bg=ACCENT, height=48)
         title_bar.pack(fill=tk.X)
         title_bar.pack_propagate(False)
-        tk.Label(title_bar, text="UWF Manager Pro v2.18",
+        tk.Label(title_bar, text="UWF Manager Pro v2.19",
                  font=FONT_TITLE, fg="white", bg=ACCENT).pack(
             side=tk.LEFT, padx=18, pady=8)
         self.lbl_admin = tk.Label(title_bar, text="", font=FONT_BOLD,
@@ -1261,6 +1261,24 @@ class UWFApp:
         扫描与清理都在独立线程执行，通过队列把进度回传主线程绘制进度条，
         绝不在 UI 线程做重 I/O，因此界面不会卡死（未响应）。
         """
+        # ====== ⚠️ 慎用警告 + 免责同意弹窗 ======
+        disclaimer = (
+            "⚠️  慎用 — 清理缓存释放覆盖层\n\n"
+            "本功能将删除系统缓存文件以释放 UWF 覆盖层空间。\n\n"
+            "重要提示：\n"
+            "• 请确保已备份重要资料（聊天记录、文档、配置文件等）\n"
+            "• 清理操作不可撤销，删除的文件将被永久移除\n"
+            "• 在 UWF 保护模式下，删除后需「提交删除」才能真正释放覆盖层容量\n"
+            "• 建议在清理前确认当前覆盖层使用率较高（接近满）时再使用\n\n"
+            "免责声明：\n"
+            "本软件按「现状」提供，开发者不对因使用本功能导致的任何数据丢失、\n"
+            "系统不稳定或其他后果承担责任。使用本功能即表示您已充分理解上述风险，\n"
+            "并自行承担全部责任。如不同意，请点击「取消」退出。\n\n"
+            "是否同意以上条款并继续？"
+        )
+        if not messagebox.askyesno("⚠️ 慎用 — 免责声明", disclaimer):
+            return  # 用户不同意 → 不执行清理
+
         # 记录 UWF 启用状态（决定是否显示「提交删除 / 加入排除」开关）
         try:
             c0 = uwf_core.UWFCore()
@@ -1761,12 +1779,21 @@ class UWFApp:
         def op():
             c = uwf_core.UWFCore()
             c.connect()
+            # 本工具只管理系统盘 C:。D:/E: 等数据/软件盘绝不纳入 UWF 保护，
+            # 否则安装到这些盘的软件只写入 RAM 覆盖层，关闭保护/重启后会被丢弃。
+            managed = {"C:"}
             flt = c.get_filter()
             vols = c.get_volumes()
 
-            # 当前受保护的卷列表
+            # 当前受保护的卷（仅本工具管理的盘）
             protected_vols = [
-                v["DriveLetter"] for v in vols if v.get("CurrentProtected")
+                v["DriveLetter"] for v in vols
+                if v.get("CurrentProtected") and v["DriveLetter"] in managed
+            ]
+            # 其它盘若仍受保护，单独记录并提示，避免误伤数据盘
+            other_protected = [
+                v["DriveLetter"] for v in vols
+                if v.get("CurrentProtected") and v["DriveLetter"] not in managed
             ]
             filter_on = bool(flt.get("CurrentEnabled"))
 
@@ -1774,6 +1801,12 @@ class UWFApp:
             if filter_on or protected_vols:
                 # ====== 关闭保护 ======
                 actions = []
+                if other_protected:
+                    actions.append(
+                        "⚠️ 注意：%s 当前也受 UWF 保护，本次未处理。"
+                        "若其上装有软件，请勿在本工具关闭保护后重启，"
+                        "否则覆盖层丢弃将丢失数据。请单独处理这些盘。"
+                        % ", ".join(other_protected))
                 # 1. 逐个取消卷保护
                 for drv in protected_vols:
                     try:
@@ -1795,6 +1828,8 @@ class UWFApp:
                 to_protect = []
                 for v in vols:
                     dl = v["DriveLetter"]
+                    if dl not in managed:
+                        continue
                     if v.get("NextProtected") is True and dl not in to_protect:
                         to_protect.append(dl)
                     elif v.get("CurrentProtected") and dl not in to_protect:

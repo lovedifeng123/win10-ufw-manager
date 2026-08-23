@@ -104,6 +104,12 @@ uwfmgr.exe
 
 ## Changelog / 更新日志
 
+### v2.19 (2026-08-23)
+- **🛑 紧急安全修复：清理功能曾误删启动目录（数据丢失事故）** — 根因：清理第一项「用户临时文件」使用 `os.path.join(os.environ.get("TEMP", ""), "*")` 与 `".*"`。**当运行时 TEMP 环境变量为空时**（例如从 D 盘根目录/某 D 盘文件夹双击运行 exe，或提权/脚本方式启动未继承到 TEMP），模式退化为裸通配符 `"*"` / `".*"`，`glob.glob("*")` 会匹配**启动程序所在的整个文件夹**并 `os.remove`/`shutil.rmtree` 全删——导致 D 盘的 VM、微信、百度网盘、图吧、Chrome 等文件夹被清空。该 bug 存在于 v2.16 / v2.17 / v2.18。
+  - **修复**：① 每个清理目标在扫描/删除前必须通过 `_abs_base` 校验——必须是绝对且明确的缓存目录，否则整项跳过（环境变量为空直接跳过，绝不再退化成裸 `*`）；② 删除前 `_safe_to_remove` 二次校验路径严格位于预期目录内，且**绝不可能是盘符根或用户主目录**；③ 移除危险的 `".*"` 模式；④ TEMP 的回退值改为绝对路径 `C:\Windows\Temp`。
+  - 已加回归测试 `test_safe_delete.py`：模拟"TEMP 为空 + 启动目录有文件"事故场景，断言启动目录内容**完好、零字节释放**；并验证护栏拒绝盘符根/用户主目录。
+- **🛑 Critical security fix: cleanup could wipe the launch directory (data-loss incident)** — Root cause: the "User Temp Files" target used `os.path.join(os.environ.get("TEMP", ""), "*")` + `".*"`. When TEMP was empty at runtime, the pattern collapsed to a bare `"*"`/`".*"`, so `glob.glob("*")` matched the **entire folder the EXE was launched from** and `os.remove`/`shutil.rmtree` deleted everything in it. Present in v2.16/v2.17/v2.18. Fixed with strict path validation (`_abs_base` / `_safe_to_remove`), dropped the `".*"` pattern, and a safe absolute TEMP fallback. Regression test `test_safe_delete.py` included.
+
 ### v2.18 (2026-08-20)
 - **🚀 清理缓存释放覆盖层 — 彻底重做，不再卡死 + 全程进度条** — 之前点「开始清理」后程序直接"未响应"直到结束，根因是扫描/删除/提交都在 UI 主线程同步执行。现在：
   - **扫描阶段**：后台线程扫描受保护 C: 盘的缓存占用，进度条实时显示扫描进度（参考 Dism++：先扫描有多少可清理，再选择）。

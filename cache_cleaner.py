@@ -25,8 +25,9 @@ import shutil
 TARGETS = [
     # ===== 1. 系统临时文件 =====
     ("📁 用户临时文件", [
-        os.path.join(os.environ.get("TEMP", ""), "*"),
-        os.path.join(os.environ.get("TEMP", ""), ".*"),
+        # 注意：必须用绝对且安全的回退值。若 TEMP 为空，回退到 C:\Windows\Temp
+        # （绝对路径），绝不可退化成裸 "*"，否则会删光启动目录（历史事故）。
+        os.path.join(os.environ.get("TEMP", r"C:\Windows\Temp"), "*"),
     ], "%TEMP% 用户临时目录", True),
     ("📁 系统临时文件", [r"C:\Windows\Temp\*"], r"C:\Windows\Temp", True),
     ("📁 驱动解压残留 (Intel/AMD/NVIDIA)", [
@@ -152,6 +153,79 @@ def _name(label):
     return label.split(" ", 1)[1] if " " in label else label
 
 
+# ==================== 安全护栏（防止误删整个启动目录的致命 bug）====================
+# 历史事故根因：清理第一项用 os.path.join(os.environ.get("TEMP", ""), "*")，
+# 当 TEMP 为空时退化为裸通配符 "*"，glob.glob("*") 会匹配【启动程序所在的整个
+# 文件夹】并把它全部删除。以下护栏确保：任何目标都必须解析为绝对且明确的缓存
+# 目录，否则整项跳过；删除前再二次校验路径确实位于预期目录内。
+
+def _abs_base(pattern):
+    """把路径模式解析为其"基准目录"（绝对、安全）。不安全则返回 None。
+
+    不安全的情况：
+      * 展开/拼接后为空（如 TEMP 为空导致 join("", "*") == "*"）
+      * 相对路径（依赖当前工作目录 CWD，极易误删）
+      * 盘符根（如 C:\）或用户主目录本身
+    """
+    expanded = os.path.expandvars(pattern).strip()
+    if not expanded:
+        return None
+    if not os.path.isabs(expanded):
+        # 相对路径依赖 CWD，直接拒绝
+        return None
+    if expanded.endswith("*"):
+        base = os.path.dirname(expanded.rstrip("\\/"))
+    elif "*" in expanded:
+        base = os.path.dirname(expanded)
+    else:
+        base = expanded
+    base = os.path.abspath(base)
+    if not _base_ok(base):
+        return None
+    return base
+
+
+def _base_ok(base):
+    if not base or not os.path.isabs(base):
+        return False
+    # 拒绝盘符根：C:\ 或 C:
+    drive, rest = os.path.splitdrive(base)
+    if drive and (rest in ("", "\\")):
+        return False
+    # 拒绝用户主目录本身（其下明确子目录允许，如 AppData、Documents）
+    up = os.path.abspath(os.environ.get("USERPROFILE", ""))
+    if up and os.path.abspath(base) == up:
+        return False
+    return True
+
+
+def _is_root_or_home(path):
+    """路径是否为盘符根（C:\）或用户主目录本身。"""
+    p = os.path.abspath(path)
+    drive, rest = os.path.splitdrive(p)
+    if drive and (rest in ("", "\\")):
+        return True
+    up = os.path.abspath(os.environ.get("USERPROFILE", ""))
+    if up and p == up:
+        return True
+    return False
+
+
+def _safe_to_remove(fpath, base):
+    """被删路径 fpath 必须严格位于预期基准目录 base 内。"""
+    if not base:
+        return False
+    bp = os.path.abspath(base)
+    if not os.path.isabs(bp):
+        return False
+    fp = os.path.abspath(fpath)
+    if _is_root_or_home(fp):
+        return False  # 防御：绝不删盘符根/用户主目录本身
+    if fp == bp:
+        return True
+    return fp.startswith(bp + os.sep)
+
+
 # ==================== 扫描 ====================
 
 def _scan_one(patterns):
@@ -159,6 +233,8 @@ def _scan_one(patterns):
     size = 0
     count = 0
     for pat in patterns:
+        if _abs_base(pat) is None:
+            continue  # 不安全（如环境变量为空）→ 跳过该项，绝不误删
         expanded = os.path.expandvars(pat)
         for fpath in glob.glob(expanded):
             try:
@@ -216,6 +292,8 @@ def _collect_commit_targets(patterns):
     commit_dirs = set()
     commit_files = []
     for pat in patterns:
+        if _abs_base(pat) is None:
+            continue  # 不安全目标不参与提交，避免误提交根目录
         expanded = os.path.expandvars(pat)
         if expanded.endswith("*"):
             commit_dirs.add(os.path.dirname(expanded.rstrip("\\/")).rstrip("\\/"))
@@ -273,9 +351,14 @@ def clean_targets(selected, progress_cb=None, cancel_event=None,
         freed = 0
         count = 0
         for pat in patterns:
+            base = _abs_base(pat)
+            if base is None:
+                continue  # 不安全（如环境变量为空）→ 跳过，绝不误删
             expanded = os.path.expandvars(pat)
             try:
                 for fpath in glob.glob(expanded):
+                    if not _safe_to_remove(fpath, base):
+                        continue  # 二次校验：只删预期目录内的内容
                     if cancel_event is not None and cancel_event.is_set():
                         cancelled = True
                         break

@@ -477,14 +477,31 @@ class UWFCore:
         _cli(["filter", "disable-HORM"])
         return True
 
-    # ==================== 重启/关机（CLI）====================
+    # ==================== 重启/关机（Windows shutdown.exe）====================
+    # 注意：uwfmgr.exe 没有 restart/shutdown 命令，必须用系统 shutdown.exe
 
     def restart_system(self):
-        _cli(["restart"])
+        """立即重启计算机。"""
+        import os
+        r = subprocess.run(
+            [os.path.join(os.environ.get("SystemRoot", "C:\\Windows"),
+                          "System32", "shutdown.exe"),
+             "/r", "/t", "0"],
+            capture_output=True, timeout=10)
+        if r.returncode not in (0, 1115):  # 1115=关机已在进行中(正常)
+            raise UWFError(f"重启失败: shutdown 返回码 {r.returncode}")
         return True
 
     def shutdown_system(self):
-        _cli(["shutdown"])
+        """立即关闭计算机。"""
+        import os
+        r = subprocess.run(
+            [os.path.join(os.environ.get("SystemRoot", "C:\\Windows"),
+                          "System32", "shutdown.exe"),
+             "/s", "/t", "0"],
+            capture_output=True, timeout=10)
+        if r.returncode not in (0, 1115):
+            raise UWFError(f"关机失败: shutdown 返回码 {r.returncode}")
         return True
 
     # ==================== 重置（CLI）====================
