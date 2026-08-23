@@ -23,114 +23,54 @@ import shutil
 # 每项: (标签, 路径模式列表, 说明, 是否默认勾选)
 # 标签首词为分类 emoji，便于 UI 分组。
 TARGETS = [
-    # ===== 1. 系统临时文件 =====
-    ("📁 用户临时文件", [
-        # 注意：必须用绝对且安全的回退值。若 TEMP 为空，回退到 C:\Windows\Temp
-        # （绝对路径），绝不可退化成裸 "*"，否则会删光启动目录（历史事故）。
-        os.path.join(os.environ.get("TEMP", r"C:\Windows\Temp"), "*"),
-    ], "%TEMP% 用户临时目录", True),
-    ("📁 系统临时文件", [r"C:\Windows\Temp\*"], r"C:\Windows\Temp", True),
-    ("📁 驱动解压残留 (Intel/AMD/NVIDIA)", [
-        r"C:\AMD\*", r"C:\Intel\*", r"C:\NVIDIA\*", r"C:\Prog\*",
-    ], "显卡/芯片组驱动安装解压目录", True),
-    ("📁 Windows 升级残留 ($Windows.*)", [
-        r"C:\$Windows.~BT\*", r"C:\$Windows.~WS\*", r"C:\$Windows.~LS\*",
-    ], "系统升级/还原后遗留的临时文件", False),
+    # ===== 核心安全项：UWF 覆盖层下的临时缓存（删除后可自动重建）=====
+    # 设计原则：只清理"纯缓存"，绝不碰用户资料、配置、日志、安装源。
+    # 每一项都必须满足：(1)删除后软件正常运行 (2)不含用户个人数据
 
-    # ===== 2. Windows 更新缓存 =====
+    ("📁 用户临时文件 %TEMP%", [
+        os.path.join(os.environ.get("TEMP", r"C:\Windows\Temp"), "*"),
+    ], "当前用户的临时文件目录（UWF 下主要占用来源）", True),
+
+    ("📁 系统临时文件 Windows\\Temp", [
+        r"C:\Windows\Temp\*",
+    ], "系统级临时文件目录", True),
+
+    # ===== Windows 更新缓存（UWF 下这些下载浪费覆盖层且重启即丢）=====
+
     ("🔄 Windows 更新下载缓存", [
         r"C:\Windows\SoftwareDistribution\Download\*",
-    ], "Windows Update 已下载的补丁包（数百MB~数GB）", True),
-    ("🔄 传递优化缓存 (DeliveryOptimization)", [
+    ], "已下载的补丁包（数百MB~数GB，UWF下重启也丢）", True),
+
+    ("🔄 传递优化缓存", [
         r"C:\Windows\SoftwareDistribution\DeliveryOptimization\*",
-    ], "Win10 传递优化服务 P2P 缓存", True),
-    ("🔄 Windows 更新记录 (DataStore)", [
-        r"C:\Windows\SoftwareDistribution\DataStore\*",
-    ], "Update 安装历史记录数据库", False),
+    ], "P2P 传递优化服务缓存", True),
 
-    # ===== 3. 日志与报告 =====
-    ("📋 Windows 错误报告 (WER)", [
-        os.path.join(os.environ.get("LOCALAPPDATA", ""),
-                     r"Microsoft\Windows\WER\*"),
-        os.path.join(os.environ.get("PROGRAMDATA", ""),
-                     r"Microsoft\Windows\WER\*"),
-    ], "程序崩溃/错误报告文件", True),
-    ("📋 Windows 事件日志", [
-        r"C:\Windows\System32\winevt\Logs\*.evtx",
-    ], "Windows Event Log 日志文件", True),
-    ("📋 系统崩溃转储 (.dmp)", [
-        os.path.join(os.environ.get("LOCALAPPDATA", ""), r"CrashDumps\*.dmp"),
-        r"C:\Windows\MEMORY.DMP", r"C:\Windows\Minidump\*",
-    ], "蓝屏/程序崩溃内存转储（可能很大）", True),
-    ("📋 Windows 日志文件 (*.log)", [
-        r"C:\Windows\Panther\*.log", r"C:\Windows\Panther\*.xml",
-        r"C:\Windows\Logs\CBS\*.log", r"C:\WinSxS\ManifestCache\*",
-        r"C:\CbsTemp\*",
-    ], "系统组件安装/更新日志", True),
-    ("📋 回收站", [r"C:\$Recycle.Bin\*"], "所有用户回收站内容", False),
+    # ===== 浏览器缓存（仅 Cache 子目录，不动配置/书签/密码/cookie）=====
 
-    # ===== 4. 浏览器与网络缓存 =====
-    ("🌐 Chrome 缓存", [
+    ("🌐 Chrome 浏览器缓存", [
         os.path.join(os.environ.get("LOCALAPPDATA", ""),
                      r"Google\Chrome\User Data\Default\Cache\*"),
         os.path.join(os.environ.get("LOCALAPPDATA", ""),
                      r"Google\Chrome\User Data\Default\Code Cache\*"),
-        os.path.join(os.environ.get("LOCALAPPDATA", ""),
-                     r"Google\Chrome\User Data\Default\Service Worker\CacheStorage\*"),
-    ], "Chrome 浏览器缓存 + Code Cache", True),
-    ("🌐 Edge 缓存", [
+    ], "仅缓存文件（不影响书签/密码/历史/扩展）", True),
+
+    ("🌐 Edge 浏览器缓存", [
         os.path.join(os.environ.get("LOCALAPPDATA", ""),
                      r"Microsoft\Edge\User Data\Default\Cache\*"),
         os.path.join(os.environ.get("LOCALAPPDATA", ""),
                      r"Microsoft\Edge\User Data\Default\Code Cache\*"),
-    ], "Edge 浏览器缓存", True),
-    ("🌐 IE/WinINet 网页缓存", [
-        os.path.join(os.environ.get("LOCALAPPDATA", ""),
-                     r"Microsoft\Windows\INetCache\*"),
-        os.path.join(os.environ.get("LOCALAPPDATA", ""),
-                     r"Microsoft\Windows\INetCookies\*"),
-    ], "IE/系统组件网页缓存和 Cookies", True),
-    ("🌐 Terminal Server Client 缓存", [
-        os.path.join(os.environ.get("LOCALAPPDATA", ""),
-                     r"Microsoft\Terminal Server Client\*"),
-    ], "远程桌面客户端缓存", True),
+    ], "仅缓存文件（不影响书签/密码/历史/扩展）", True),
 
-    # ===== 5. 系统加速缓存 =====
-    ("⚡ Windows 预读取 (Prefetch)", [r"C:\Windows\Prefetch\*"],
-     "Prefetch 预读取文件（会自动重建）", True),
-    ("⚡ 缩略图缓存 (Thumbcache)", [
+    # ===== 系统自动重建缓存 =====
+
+    ("⚡ 预读取缓存 Prefetch", [
+        r"C:\Windows\Prefetch\*",
+    ], "系统预读取文件（删除后自动重建，首次启动稍慢）", True),
+
+    ("⚡ 缩略图缓存", [
         os.path.join(os.environ.get("LOCALAPPDATA", ""),
                      r"Microsoft\Windows\Explorer\thumbcache_*.db"),
-        os.path.join(os.environ.get("LOCALAPPDATA", ""),
-                     r"Microsoft\Windows\Explorer\IconCache.db"),
-    ], "缩略图缓存（需重启资源管理器）", True),
-    ("⚡ .NET Native Images 缓存", [
-        r"C:\Windows\assembly\NativeImages_v4.0_64\temp\*",
-        r"C:\Windows\assembly\NativeImages_v4.0_64\tmp\*",
-        r"C:\Windows\assembly\temp\*", r"C:\Windows\assembly\tmp\*",
-    ], ".NET 程序集原生镜像缓存（会自动重建）", True),
-    ("⚡ NuGet 包缓存", [
-        os.path.join(os.environ.get("USERPROFILE", ""), r".nuget\packages\*"),
-    ], ".NET 开发 NuGet 下载包缓存", False),
-
-    # ===== 6. 应用程序缓存 =====
-    ("📦 Office 安装源 (ClickToRun)", [
-        os.path.join(os.environ.get("PROGRAMDATA", ""),
-                     r"Microsoft\ClickToRun\Packages\*"),
-    ], "Office 365/2016 ClickToRun 安装源", False),
-    ("📦 Office 本地安装源 (MSOCache)", [r"C:\MSOCache\*"],
-     "Office 传统安装源文件", False),
-    ("📦 Windows Installer 补丁缓存", [
-        r"C:\Windows\Installer\$PatchCache$\*",
-    ], "MSP 补丁安装缓存（实验性）", False),
-    ("📦 PDB 符号调试缓存", [
-        os.path.join(os.environ.get("LOCALAPPDATA", ""), r"DBG\*"),
-    ], "Visual Studio 调试符号缓存", False),
-    ("📦 腾讯软件临时文件 (QQ等)", [
-        os.path.join(os.environ.get("APPDATA", ""), r"Tencent\AndroidAssist\*"),
-        os.path.join(os.environ.get("APPDATA", ""), r"Tencent\Logs\*"),
-        os.path.join(os.environ.get("APPDATA", ""), r"Tencent\WinTemp\*"),
-    ], "QQ/腾讯软件临时文件和日志", True),
+    ], "文件缩略图（删除后自动重建，首次打开文件夹稍慢）", False),
 ]
 
 
