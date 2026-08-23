@@ -8,6 +8,7 @@ __pycache__/
 *.pyc
 venv/
 buildenv/
+buildenv2/
 *.egg-info/
 
 # ---- Runtime / logs ----
