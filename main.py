@@ -1,5 +1,5 @@
 """
-UWF Manager Pro v2.19 - 主程序（tkinter UI）
+UWF Manager Pro v2.19.1 - 主程序（tkinter UI）
 功能：
   1. 状态面板：启用/禁用/HORM/关机待处理
   2. 覆盖层内存监控（已用/总容量/阈值变色）← 修复数据显示
@@ -453,7 +453,7 @@ class UWFApp:
 
     # ==================== UI 布局 ====================
     def _setup_ui(self):
-        self.root.title("UWF Manager Pro v2.19")
+        self.root.title("UWF Manager Pro v2.19.1")
         self.root.geometry("1100x800")
         self.root.configure(bg=BG)
         self.root.minsize(900, 680)

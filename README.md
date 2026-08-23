@@ -110,6 +110,10 @@ uwfmgr.exe
   - 已加回归测试 `test_safe_delete.py`：模拟"TEMP 为空 + 启动目录有文件"事故场景，断言启动目录内容**完好、零字节释放**；并验证护栏拒绝盘符根/用户主目录。
 - **🛑 Critical security fix: cleanup could wipe the launch directory (data-loss incident)** — Root cause: the "User Temp Files" target used `os.path.join(os.environ.get("TEMP", ""), "*")` + `".*"`. When TEMP was empty at runtime, the pattern collapsed to a bare `"*"`/`".*"`, so `glob.glob("*")` matched the **entire folder the EXE was launched from** and `os.remove`/`shutil.rmtree` deleted everything in it. Present in v2.16/v2.17/v2.18. Fixed with strict path validation (`_abs_base` / `_safe_to_remove`), dropped the `".*"` pattern, and a safe absolute TEMP fallback. Regression test `test_safe_delete.py` included.
 
+### v2.19.1 (2026-08-23)
+- **🛡️ 清理目标进一步收窄为纯缓存（防误删）** — 在 v2.19 已修复致命误删 bug 的基础上，将清理项从 29 项精简为 **8 项**，且**全部为 C: 盘的纯缓存目录**：用户临时文件、系统 Temp、Windows 更新下载缓存、传递优化缓存、Chrome/Edge 浏览器缓存、Prefetch、缩略图缓存。**不再触碰**任何用户资料、配置、日志、安装源、驱动残留、升级遗留等风险项。清理前强制弹「⚠️ 慎用 — 免责声明」对话框，须点「是」才执行。
+- **🛡️ Cleanup targets narrowed to pure cache only** — Reduced from 29 to **8 items**, all pure C: cache dirs. No user data/config/logs/install sources touched. A mandatory "⚠️ Use with caution — disclaimer" dialog must be accepted before any cleanup runs.
+
 ### v2.18 (2026-08-20)
 - **🚀 清理缓存释放覆盖层 — 彻底重做，不再卡死 + 全程进度条** — 之前点「开始清理」后程序直接"未响应"直到结束，根因是扫描/删除/提交都在 UI 主线程同步执行。现在：
   - **扫描阶段**：后台线程扫描受保护 C: 盘的缓存占用，进度条实时显示扫描进度（参考 Dism++：先扫描有多少可清理，再选择）。
