@@ -33,18 +33,133 @@ class UWFNotSupported(Exception):
 
 
 UWFMGR = None  # 延迟解析，绕过 32 位进程 System32 重定向
-UWF_CORE_VERSION = "2.21"
+UWF_CORE_VERSION = "2.22"
+
+
+UWF_FEATURE_NAME = "Client-UnifiedWriteFilter"
+
+_UWF_EXE_CANDIDATES = (
+    r"C:\Windows\System32\uwfmgr.exe",
+    r"C:\Windows\Sysnative\uwfmgr.exe",
+    r"C:\Windows\SysWOW64\uwfmgr.exe",
+)
+
+# UWF 仅在这些 Windows 版本上提供（EditionID 片段匹配）
+_UWF_EDITION_KEYS = (
+    "Enterprise",       # 企业版 / 企业版 LTSC
+    "Education",        # 教育版
+    "IoTEnterprise",    # IoT 企业版
+    "ProfessionalEducation",
+    "ProfessionalWorkstation",
+)
+
+
+def _find_uwfmgr():
+    """返回真实存在的 uwfmgr.exe 路径，不存在返回 None。"""
+    for p in _UWF_EXE_CANDIDATES:
+        if os.path.exists(p):
+            return p
+    return None
 
 
 def _resolve_uwfmgr():
-    candidates = [
-        r"C:\Windows\System32\uwfmgr.exe",
-        r"C:\Windows\Sysnative\uwfmgr.exe",
-    ]
-    for p in candidates:
-        if os.path.exists(p):
-            return p
-    return candidates[0]
+    return _find_uwfmgr() or _UWF_EXE_CANDIDATES[0]
+
+
+def _decode(raw):
+    """Windows 控制台输出可能是 GBK 或 UTF-8，逐个尝试解码。"""
+    if isinstance(raw, str):
+        return raw
+    for enc in ("gbk", "utf-8", "mbcs", "latin-1"):
+        try:
+            return raw.decode(enc)
+        except Exception:
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
+def get_windows_edition():
+    """返回 (产品名, EditionID)，如 ("Windows 10 Enterprise", "Enterprise")。"""
+    try:
+        import winreg
+        with winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SOFTWARE\Microsoft\Windows NT\CurrentVersion") as k:
+            try:
+                product = winreg.QueryValueEx(k, "ProductName")[0]
+            except Exception:
+                product = "未知"
+            try:
+                edition = winreg.QueryValueEx(k, "EditionID")[0]
+            except Exception:
+                edition = ""
+            return product, edition
+    except Exception:
+        return "未知", ""
+
+
+def edition_supports_uwf(edition_id=""):
+    """该 Windows 版本是否提供 UWF 功能。未知版本返回 True（不误报）。"""
+    if not edition_id:
+        return True
+    return any(k.lower() in edition_id.lower() for k in _UWF_EDITION_KEYS)
+
+
+def uwf_availability():
+    """诊断本机 UWF 功能可用性（GUI 无关，可单测）。
+
+    返回 dict：
+      available      : uwfmgr.exe 是否存在（=功能已安装）
+      supported      : 当前 Windows 版本是否提供 UWF
+      path           : uwfmgr.exe 路径或 None
+      product/edition: Windows 版本信息
+      state          : 'ok' | 'not_installed' | 'unsupported'
+      msg            : 面向用户的中文说明
+    """
+    path = _find_uwfmgr()
+    product, edition = get_windows_edition()
+    supported = edition_supports_uwf(edition)
+    if path:
+        state, msg = "ok", "UWF 功能已安装，可正常使用。"
+    elif not supported:
+        state = "unsupported"
+        msg = (f"当前系统「{product}」（{edition or '未知版本'}）不提供 UWF 功能。\n"
+               "UWF 仅适用于 Windows 企业版 / 教育版 / IoT 企业版；\n"
+               "家庭版、专业版、工作站专业版等无法启用，需更换系统版本。")
+    else:
+        state = "not_installed"
+        msg = ("本机尚未安装 UWF 功能（缺少 uwfmgr.exe）。\n"
+               "UWF 是 Windows 的「可选功能」，需先启用并重启电脑才会出现。")
+    return {"available": bool(path), "supported": supported, "path": path,
+            "product": product, "edition": edition, "state": state, "msg": msg}
+
+
+def enable_uwf_feature(timeout=300):
+    """通过 DISM 启用 UWF 可选功能（需管理员）。返回 (returncode, output)。
+
+    注意：启用后必须重启电脑，重启后 uwfmgr.exe 才会出现。
+    DISM 不可用时自动回退到 PowerShell Enable-WindowsOptionalFeature。
+    """
+    cmd = ["dism", "/online", "/enable-feature",
+           f"/featurename:{UWF_FEATURE_NAME}", "/all", "/norestart"]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, timeout=timeout,
+                              shell=False)
+    except FileNotFoundError:
+        cmd = ["powershell", "-NoProfile", "-Command",
+               f"Enable-WindowsOptionalFeature -Online "
+               f"-FeatureName {UWF_FEATURE_NAME} -All -NoRestart"]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, timeout=timeout,
+                                  shell=False)
+        except Exception as e:
+            return -1, f"启用失败：{e}"
+    except subprocess.TimeoutExpired:
+        return -1, f"操作超时（>{timeout} 秒）。"
+    except Exception as e:
+        return -1, f"启用失败：{e}"
+    out = _decode((proc.stdout or b"") + (proc.stderr or b""))
+    return proc.returncode, out
 
 
 def _is_admin():

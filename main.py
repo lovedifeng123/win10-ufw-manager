@@ -1,5 +1,5 @@
 """
-UWF Manager Pro v2.21 - 主程序（tkinter UI）
+UWF Manager Pro v2.22 - 主程序（tkinter UI）
 功能：
   1. 状态面板：启用/禁用/HORM/关机待处理
   2. 覆盖层内存监控（已用/总容量/阈值变色）← 修复数据显示
@@ -464,7 +464,7 @@ class UWFApp:
 
     # ==================== UI 布局 ====================
     def _setup_ui(self):
-        self.root.title("UWF Manager Pro v2.21")
+        self.root.title("UWF Manager Pro v2.22")
         self.root.geometry("1100x800")
         self.root.configure(bg=BG)
         self.root.minsize(900, 680)
@@ -485,7 +485,7 @@ class UWFApp:
         title_bar = tk.Frame(self.root, bg=ACCENT, height=48)
         title_bar.pack(fill=tk.X)
         title_bar.pack_propagate(False)
-        tk.Label(title_bar, text="UWF Manager Pro v2.21",
+        tk.Label(title_bar, text="UWF Manager Pro v2.22",
                  font=FONT_TITLE, fg="white", bg=ACCENT).pack(
             side=tk.LEFT, padx=18, pady=8)
         self.lbl_admin = tk.Label(title_bar, text="", font=FONT_BOLD,
@@ -550,17 +550,19 @@ class UWFApp:
 
         guide_title_row = tk.Frame(guide_inner, bg="#FFF4CE")
         guide_title_row.pack(fill=tk.X, padx=12, pady=(10, 4))
-        tk.Label(guide_title_row, text="💡 UWF 未启用  |  UWF Not Enabled",
-                 font=("Segoe UI", 11, "bold"), fg="#7A5C00", bg="#FFF4CE").pack(side=tk.LEFT)
+        self.guide_title_lbl = tk.Label(
+            guide_title_row, text="💡 UWF 未启用  |  UWF Not Enabled",
+            font=("Segoe UI", 11, "bold"), fg="#7A5C00", bg="#FFF4CE")
+        self.guide_title_lbl.pack(side=tk.LEFT)
 
-        guide_desc = tk.Label(guide_inner,
+        self.guide_desc_lbl = tk.Label(guide_inner,
             text="统一写入筛选器（UWF）是 Windows 内置的「影子系统」功能。\n"
                  "启用后每次重启自动还原，适合公用电脑、自助终端、亲子保护等场景。\n\n"
                  "Unified Write Filter (UWF) is Windows' built-in \"shadow system\" feature.\n"
                  "After enabled, the system auto-restores on every reboot. "
                  "Perfect for public PCs, kiosks, child protection, etc.",
             font=FONT, fg="#5A4A00", bg="#FFF4CE", justify=tk.LEFT)
-        guide_desc.pack(anchor="w", padx=12, pady=(0, 8))
+        self.guide_desc_lbl.pack(anchor="w", padx=12, pady=(0, 8))
 
         guide_btn_row = tk.Frame(guide_inner, bg="#FFF4CE")
         guide_btn_row.pack(fill=tk.X, padx=12, pady=(0, 10))
@@ -1042,25 +1044,53 @@ class UWFApp:
                 text="10 秒内未收到数据。请确认以管理员运行后点击「刷新」。")
 
     def _render_status(self, data, is_error=False, msg=""):
+        self._rendered = True
+
+        # --- UWF 功能可用性诊断 ---
+        # 关键：新机未装 UWF 时，WMI 查询往往是"成功但返回空"，并不会走 is_error
+        # 分支，导致下面误判为"已禁用"并把开启引导隐藏掉。因此这里一律按
+        # uwfmgr.exe 是否存在来判定，而不是只看 WMI/错误。
+        try:
+            self.uwf_avail = uwf_core.uwf_availability()
+        except Exception:
+            self.uwf_avail = {"available": True, "supported": True,
+                              "state": "ok", "msg": "", "product": "未知",
+                              "edition": "", "path": None}
+        avail = self.uwf_avail
+
+        if not avail.get("available"):
+            # 功能未安装 / 版本不支持 → 必须显示开启引导
+            self._show_uwf_guide(avail)
+            self.lbl_status.config(
+                text="版本不支持" if avail.get("state") == "unsupported"
+                else "功能未安装", fg=RED)
+            self.lbl_msg.config(text=avail.get("msg", ""))
+            self.lbl_admin.config(
+                text="管理员" if self.admin else "非管理员!")
+            return
+
+        # UWF 功能已安装 → 隐藏引导卡片，并解禁写操作按钮
+        try:
+            self.guide_frame.pack_forget()
+        except Exception:
+            pass
+        for name in ("btn_toggle", "btn_apply_basic", "btn_apply_cache"):
+            try:
+                getattr(self, name).config(state="normal")
+            except Exception:
+                pass
+
         if is_error:
-            self._rendered = True
             self.lbl_status.config(text="不可用", fg=RED)
             self.lbl_msg.config(text=f"错误: {msg}")
             self.lbl_admin.config(
                 text="管理员" if self.admin else "非管理员!")
-            # UWF 不可用 → 显示引导开启卡片
             try:
                 self.guide_frame.pack(fill=tk.X, pady=(0, 8))
             except Exception:
                 pass
             return
 
-        self._rendered = True
-        # UWF 可用 → 隐藏引导卡片
-        try:
-            self.guide_frame.pack_forget()
-        except Exception:
-            pass
         flt, vols, overlay, cfg = data
 
         # --- 状态 ---
@@ -1239,54 +1269,128 @@ class UWFApp:
                 "可右键托盘图标选择「清理缓存释放覆盖层」。",
                 warn=False)
 
-    def on_enable_uwf_auto(self):
-        """一键自动启用 UWF 功能（通过 DISM 命令）。"""
-        import subprocess
+    def _show_uwf_guide(self, avail):
+        """显示「开启 UWF」引导卡片，并按诊断结果更新文案与按钮可用性。"""
+        try:
+            self.guide_frame.pack(fill=tk.X, pady=(0, 8))
+        except Exception:
+            pass
 
-        self.guide_status.config(text="⏳ 正在启用 UWF... / Enabling UWF, please wait...")
-        self.root.update()
+        state = avail.get("state")
+        product = avail.get("product", "未知")
+        edition = avail.get("edition", "")
+
+        if state == "unsupported":
+            title = "⚠️ 当前系统版本不支持 UWF  |  Edition Not Supported"
+            desc = (f"检测到：{product}（{edition or '未知'}）\n\n"
+                    "UWF（统一写入筛选器）仅适用于：\n"
+                    "  • Windows 企业版 / 企业版 LTSC\n"
+                    "  • Windows 教育版\n"
+                    "  • Windows IoT 企业版\n\n"
+                    "家庭版、专业版等版本无法启用 UWF，需要更换或升级系统版本。")
+            try:
+                self.btn_enable_uwf.config(state="disabled")
+            except Exception:
+                pass
+        else:
+            title = "💡 本机尚未安装 UWF 功能  |  UWF Not Installed"
+            desc = (f"检测到：{product}（{edition or '未知'}）—— 该版本支持 UWF。\n\n"
+                    "UWF 是 Windows 的「可选功能」，需要先启用并重启电脑，\n"
+                    "重启后 uwfmgr.exe 才会出现，本软件才能正常工作。\n\n"
+                    "方式一：点「一键开启 UWF」自动完成（约 1-3 分钟）。\n"
+                    "方式二：打开 Windows 功能面板手动勾选\n"
+                    "  控制面板 → 程序和功能 → 启用或关闭 Windows 功能\n"
+                    "  → 设备锁定 → 统一写入筛选器（Unified Write Filter）\n\n"
+                    "⚠️ 启用后必须重启电脑才会生效。")
+            try:
+                self.btn_enable_uwf.config(state="normal")
+            except Exception:
+                pass
 
         try:
-            # 使用 DISM 启用 UWF 功能（需要管理员权限，/norestart 不自动重启）
-            result = subprocess.run(
-                ["dism", "/online", "/enable-feature",
-                 "/featurename:Client-UnifiedWriteFilter",
-                 "/all", "/norestart"],
-                capture_output=True, text=True, timeout=120,
-                encoding="gbk", errors="replace")
-            output = result.stdout + result.stderr
+            self.guide_title_lbl.config(text=title)
+            self.guide_desc_lbl.config(text=desc)
+        except Exception:
+            pass
 
-            if result.returncode == 0:
-                self.guide_status.config(
-                    text="✅ UWF 已启用！请重启电脑以完成安装。\n"
-                         "✅ UWF enabled! Please restart PC to complete installation.",
-                    fg="#107C10")
-                messagebox.showinfo(
-                    "UWF 已启用 / UWF Enabled",
-                    "统一写入筛选器（UWF）功能已成功启用！\n\n"
-                    "Unified Write Filter has been enabled successfully!\n\n"
-                    "请重启电脑以完成安装。 / Please restart your PC.\n\n"
-                    "重启后打开本软件即可开始使用 UWF。\n"
-                    "After reboot, open this app to start using UWF.")
-            else:
-                # 检查是否是"已启用"的错误（返回码可能非 0 但实际成功）
-                if "已启用" in output or "enabled" in output.lower():
-                    self.guide_status.config(text="✅ UWF 已经是启用状态。请重启确认。", fg="#107C10")
-                    messagebox.showinfo("提示", "UWF 已经是启用状态。请重启电脑确认。")
-                else:
-                    self.guide_status.config(text=f"❌ 启用失败 (code {result.returncode})", fg="#D13438")
-                    messagebox.showerror(
-                        "启用失败 / Enable Failed",
-                        f"DISM 返回码: {result.returncode}\n\n{output[:500]}")
-        except subprocess.TimeoutExpired:
-            self.guide_status.config(text="❌ 操作超时（>120秒）", fg="#D13438")
-            messagebox.showerror("超时", "DISM 操作超时。请手动启用或检查网络。")
-        except FileNotFoundError:
-            self.guide_status.config(text="❌ 找不到 DISM 工具", fg="#D13438")
-            messagebox.showerror("错误", "找不到 DISM 工具。请使用「打开 Windows 功能面板」手动启用。")
-        except Exception as ex:
-            self.guide_status.config(text=f"❌ 错误: {ex}", fg="#D13438")
-            messagebox.showerror("错误", f"启用 UWF 时出错：\n{ex}")
+        # 功能未安装时禁用写操作按钮，避免用户点下去只看到"找不到 uwfmgr.exe"
+        for name in ("btn_toggle", "btn_apply_basic", "btn_apply_cache"):
+            try:
+                getattr(self, name).config(state="disabled")
+            except Exception:
+                pass
+
+    def on_enable_uwf_auto(self):
+        """一键自动启用 UWF 功能（DISM，失败回退 PowerShell）。"""
+        try:
+            avail = getattr(self, "uwf_avail", None) or uwf_core.uwf_availability()
+        except Exception:
+            avail = {"state": "not_installed", "msg": ""}
+
+        if avail.get("state") == "unsupported":
+            messagebox.showerror(
+                "版本不支持 / Edition Not Supported",
+                "当前系统版本不提供 UWF 功能，无法启用。\n\n"
+                f"{avail.get('msg', '')}")
+            return
+
+        if not self.admin:
+            messagebox.showwarning(
+                "需要管理员权限 / Admin Required",
+                "启用 UWF 需要管理员权限。\n\n"
+                "请关闭本程序，右键「以管理员身份运行」后重试。\n"
+                "（本版本双击会自动请求管理员，若未提权请检查 UAC 设置）")
+            return
+
+        if not messagebox.askyesno(
+                "确认启用 UWF / Confirm",
+                "即将启用 Windows 可选功能「统一写入筛选器」。\n\n"
+                "• 需要管理员权限（当前已具备）\n"
+                "• 过程约 1-3 分钟，请勿关闭窗口\n"
+                "• 完成后必须重启电脑才会生效\n\n"
+                "是否继续？"):
+            return
+
+        self.guide_status.config(text="⏳ 正在启用 UWF…（约 1-3 分钟，请稍候）",
+                                 fg="#7A5C00")
+        self.root.update()
+
+        rc, output = uwf_core.enable_uwf_feature()
+        low = (output or "").lower()
+
+        already = ("已启用" in output) or ("is already enabled" in low) or \
+                  ("无需更改" in output) or ("no change" in low)
+        notfound = (("功能名称" in output and "未知" in output) or
+                    ("feature name" in low and "unknown" in low) or
+                    ("不适用于" in output) or
+                    ("不适用于此版本的 windows" in low))
+
+        if rc == 0 or already:
+            self.guide_status.config(
+                text="✅ UWF 已启用！请重启电脑以完成安装。", fg="#107C10")
+            messagebox.showinfo(
+                "UWF 已启用 / UWF Enabled",
+                "统一写入筛选器已成功启用！\n\n"
+                "请重启电脑 —— 重启后 uwfmgr.exe 才会出现，本软件即可正常使用。\n\n"
+                "重启后打开软件，在「状态概览」点「开启保护」即可。")
+            try:
+                self.refresh()
+            except Exception:
+                pass
+        elif notfound:
+            self.guide_status.config(text="❌ 该功能在此系统上不可用", fg="#D13438")
+            messagebox.showerror(
+                "无法启用 / Cannot Enable",
+                "Windows 报告该功能在此系统上不可用，通常是系统版本不支持 UWF。\n\n"
+                "UWF 仅支持：企业版 / 企业版 LTSC / 教育版 / IoT 企业版。\n\n"
+                f"{output[:600]}")
+        else:
+            self.guide_status.config(text=f"❌ 启用失败 (code {rc})", fg="#D13438")
+            messagebox.showerror(
+                "启用失败 / Enable Failed",
+                f"返回码: {rc}\n\n{output[:800]}\n\n"
+                "可尝试「打开 Windows 功能面板」手动勾选，"
+                "或确认当前系统版本是否支持 UWF。")
 
     def on_open_windows_features(self):
         """打开 Windows 可选功能控制面板页面（让用户手动勾选 UWF）。"""
@@ -1755,6 +1859,13 @@ class UWFApp:
         不触动设置面板，避免打断用户正在输入的阈值。"""
         flt, vols, overlay, cfg = data
         # --- 状态文字 ---
+        # UWF 功能未安装时不要覆盖成"已禁用"，保持"功能未安装"/"版本不支持"
+        avail = getattr(self, "uwf_avail", None)
+        if avail is not None and not avail.get("available"):
+            self.lbl_status.config(
+                text="版本不支持" if avail.get("state") == "unsupported"
+                else "功能未安装", fg=RED)
+            return
         enabled = flt.get("CurrentEnabled")
         if enabled:
             self.lbl_status.config(text="已启用", fg=GREEN)
