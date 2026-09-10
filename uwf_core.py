@@ -33,7 +33,7 @@ class UWFNotSupported(Exception):
 
 
 UWFMGR = None  # 延迟解析，绕过 32 位进程 System32 重定向
-UWF_CORE_VERSION = "2.7"
+UWF_CORE_VERSION = "2.20"
 
 
 def _resolve_uwfmgr():
@@ -152,6 +152,234 @@ def _full_path(drive_letter, rel_path):
 
 def _variant_to_py(val):
     return val
+
+
+# ==================== 磁盘 / 覆盖文件位置 ====================
+
+OVERLAY_FILE_NAME = "uwfswap.sys"
+
+# MSFT_PhysicalDisk.MediaType
+_MEDIA_TYPE = {0: "未知", 3: "HDD 机械盘", 4: "SSD 固态盘", 5: "SCM 存储级内存"}
+# MSFT_PhysicalDisk.BusType（常用值）
+_BUS_TYPE = {0: "未知", 1: "SCSI", 2: "ATAPI", 3: "ATA", 4: "1394", 5: "SSA",
+             6: "光纤", 7: "USB", 8: "RAID", 9: "iSCSI", 10: "SAS",
+             11: "SATA", 12: "SD", 13: "MMC", 14: "虚拟", 15: "文件支持",
+             16: "存储空间", 17: "NVMe", 18: "SCM", 19: "UFS"}
+# 傲腾（Optane / 3D XPoint）型号关键字
+_OPTANE_KEYS = ("OPTANE", "MEMPEK", "P4800", "P1600", "P5800")
+
+
+def _fixed_drive_letters():
+    """返回本机固定磁盘盘符列表（大写，如 ['C:', 'D:', 'F:']）。
+
+    注意：pywin32 里没有 win32api.GetDriveType，必须走 kernel32.GetDriveTypeW，
+    DRIVE_FIXED == 3（可移动盘不适合放 UWF 覆盖文件）。
+    """
+    letters = []
+    get_type = ctypes.windll.kernel32.GetDriveTypeW
+    try:
+        raw = win32api.GetLogicalDriveStrings()
+    except Exception:
+        raw = ""
+    for d in (raw or "").split("\x00"):
+        d = (d or "").strip()
+        if len(d) >= 2 and d[1] == ":":
+            try:
+                if get_type(d + "\\") == 3:          # DRIVE_FIXED
+                    letters.append(d[0].upper() + ":")
+            except Exception:
+                continue
+    if not letters:                                   # 兜底
+        for ch in "CDEFGHIJKLMNOPQRSTUVWXYZ":
+            try:
+                if os.path.isdir(ch + ":\\"):
+                    letters.append(ch + ":")
+            except Exception:
+                continue
+    return sorted(set(letters))
+
+
+def find_overlay_files():
+    """扫描所有固定盘根目录，返回 {盘符(大写): 大小MB}，只含已存在项。
+
+    UWF 磁盘模式的覆盖文件固定名为 uwfswap.sys，放在所选卷的根目录。
+    """
+    found = {}
+    for letter in _fixed_drive_letters():
+        p = f"{letter}\\{OVERLAY_FILE_NAME}"
+        try:
+            if os.path.isfile(p):
+                found[letter] = os.path.getsize(p) / (1024.0 * 1024.0)
+        except Exception:
+            continue
+    return found
+
+
+def _wmi_volumes():
+    """盘符 -> {label, fs, size_gb, free_gb}（仅固定磁盘）。"""
+    out = {}
+    try:
+        svc = win32com.client.GetObject(r"winmgmts:\\.\root\cimv2")
+        for d in svc.InstancesOf("Win32_LogicalDisk"):
+            try:
+                if int(getattr(d, "DriveType", 0) or 0) != 3:
+                    continue
+                dl = str(getattr(d, "DeviceID", "") or "").upper()
+                if len(dl) != 2:
+                    continue
+                out[dl] = {
+                    "label": getattr(d, "VolumeName", "") or "",
+                    "fs": getattr(d, "FileSystem", "") or "",
+                    "size_gb": float(getattr(d, "Size", 0) or 0) / (1024.0 ** 3),
+                    "free_gb": float(getattr(d, "FreeSpace", 0) or 0) / (1024.0 ** 3),
+                }
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return out
+
+
+def _wmi_partition_disk():
+    """盘符 -> 物理磁盘号（依赖 root\\Microsoft\\Windows\\Storage）。
+
+    坑：win32com 读 MSFT_Partition.DriveLetter 得到的是「字符编码整数」
+    （C=67, D=68, E=69, F=70, 无盘符=0），不是字符串，必须 chr() 还原。
+    """
+    out = {}
+    try:
+        svc = win32com.client.GetObject(
+            r"winmgmts:\\.\root\Microsoft\Windows\Storage")
+        for p in svc.InstancesOf("MSFT_Partition"):
+            try:
+                dl = getattr(p, "DriveLetter", None)
+                dn = getattr(p, "DiskNumber", None)
+                if dl is None or dn is None:
+                    continue
+                if isinstance(dl, (int, float)) or str(dl).isdigit():
+                    code = int(dl)
+                    if code <= 0:
+                        continue                 # 无盘符分区
+                    letter = chr(code)
+                else:
+                    letter = str(dl)[0]
+                if not letter.isalpha():
+                    continue
+                out[letter.upper() + ":"] = int(dn)
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return out
+
+
+def _wmi_disks():
+    """物理磁盘号 -> {model, media_type, bus_type}（root\\...\\Storage）。"""
+    out = {}
+    try:
+        svc = win32com.client.GetObject(
+            r"winmgmts:\\.\root\Microsoft\Windows\Storage")
+        for p in svc.InstancesOf("MSFT_PhysicalDisk"):
+            try:
+                dn = int(getattr(p, "DeviceId"))
+                out[dn] = {
+                    "model": getattr(p, "FriendlyName", "") or "",
+                    "media_type": int(getattr(p, "MediaType", 0) or 0),
+                    "bus_type": int(getattr(p, "BusType", 0) or 0),
+                }
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return out
+
+
+def _cimv2_partition_disk():
+    """兜底：Win32_LogicalDiskToPartition 关联得到 盘符 -> 物理磁盘号。"""
+    out = {}
+    try:
+        svc = win32com.client.GetObject(r"winmgmts:\\.\root\cimv2")
+        for a in svc.InstancesOf("Win32_LogicalDiskToPartition"):
+            try:
+                letter = str(a.Dependent.DeviceID or "").upper()[:2]
+                disk_no = int(a.Antecedent.DiskIndex)
+                if len(letter) == 2 and letter[1] == ":" and disk_no >= 0:
+                    out[letter] = disk_no
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return out
+
+
+def _cimv2_disks():
+    """兜底：Win32_DiskDrive -> {磁盘号: {model, media_type, bus_type}}。"""
+    media_by_if = {"SCSI": 4, "NVMe": 4, "IDE": 0, "USB": 0}
+    bus_by_if = {"SCSI": 1, "NVMe": 17, "IDE": 3, "USB": 7}
+    out = {}
+    try:
+        svc = win32com.client.GetObject(r"winmgmts:\\.\root\cimv2")
+        for d in svc.InstancesOf("Win32_DiskDrive"):
+            try:
+                idx = int(getattr(d, "Index"))
+                iface = str(getattr(d, "InterfaceType", "") or "").upper()
+                out[idx] = {
+                    "model": getattr(d, "Model", "") or "",
+                    "media_type": media_by_if.get(iface, 0),
+                    "bus_type": bus_by_if.get(iface, 0),
+                }
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return out
+
+
+def list_storage():
+    """枚举所有固定盘的卷，并附带所在物理磁盘信息（供「选择覆盖磁盘」用）。
+
+    返回 list[dict]，按盘符排序，字段：
+        letter    盘符，如 "C:"
+        label     卷标
+        fs        文件系统
+        size_gb   总容量(GB)
+        free_gb   可用空间(GB)
+        disk_no   物理磁盘号（未知为 None）
+        model     物理磁盘型号
+        media     介质类型描述（SSD / HDD / 傲腾 Optane）
+        is_optane 是否傲腾
+        bus       总线类型名
+        swap_mb   该卷根目录已有 uwfswap.sys 大小(MB)，无则 0
+    """
+    vols = _wmi_volumes()
+    part2disk = _wmi_partition_disk() or _cimv2_partition_disk()
+    disks = _wmi_disks() or _cimv2_disks()
+    swaps = find_overlay_files()
+
+    rows = []
+    for letter in sorted(vols):
+        info = vols[letter] or {}
+        dno = part2disk.get(letter)
+        dinfo = disks.get(dno, {}) if dno is not None else {}
+        media_type = int(dinfo.get("media_type") or 0)
+        model = dinfo.get("model") or ""
+        is_opt = (media_type == 5 or
+                  any(k in model.upper() for k in _OPTANE_KEYS))
+        media = "傲腾 Optane" if is_opt else _MEDIA_TYPE.get(media_type, "未知")
+        rows.append({
+            "letter": letter,
+            "label": info.get("label") or "",
+            "fs": info.get("fs") or "",
+            "size_gb": info.get("size_gb", 0.0),
+            "free_gb": info.get("free_gb", 0.0),
+            "disk_no": dno,
+            "model": model,
+            "media": media,
+            "is_optane": is_opt,
+            "bus": _BUS_TYPE.get(int(dinfo.get("bus_type") or 0), "未知"),
+            "swap_mb": float(swaps.get(letter, 0) or 0),
+        })
+    return rows
 
 
 # ==================== 核心类 ====================
@@ -360,6 +588,24 @@ class UWFCore:
     def unprotect_volume(self, drive_letter, current_session=True):
         _cli(["volume", "unprotect", _norm_drive(drive_letter)])
         return True
+
+    def create_swapfile(self, volume):
+        """在指定卷上创建覆盖交换文件（uwfswap.sys），并把覆盖类型设为磁盘。
+
+        对应 `uwfmgr volume create-swapfile <卷>`。这是 UWF 官方提供的
+        「指定磁盘模式覆盖文件放在哪个盘」的命令：
+            Allow UWF swapfile (aka. DISK Overlay) to be created and used
+            on any volume —— 覆盖文件可放在任意卷，与该卷是否受保护无关。
+
+        约束（由 UWF 强制）：筛选器必须处于禁用状态，且覆盖类型为磁盘模式。
+        重启后生效。
+        """
+        _cli(["volume", "create-swapfile", _norm_drive(volume)])
+        return True
+
+    def get_overlay_file_locations(self):
+        """返回各盘根目录已有的 uwfswap.sys：{盘符: 大小MB}。"""
+        return find_overlay_files()
 
     # ==================== 排除列表（CLI）====================
 

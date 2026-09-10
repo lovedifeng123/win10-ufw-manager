@@ -1,5 +1,5 @@
 """
-UWF Manager Pro v2.19.1 - 主程序（tkinter UI）
+UWF Manager Pro v2.20 - 主程序（tkinter UI）
 功能：
   1. 状态面板：启用/禁用/HORM/关机待处理
   2. 覆盖层内存监控（已用/总容量/阈值变色）← 修复数据显示
@@ -404,7 +404,9 @@ class UWFApp:
         self.settings_gen = 0
         self.rt_gen = 0
         self.reg_gen = 0
+        self.disk_gen = 0
         self._rendered = False
+        self.ufw_enabled = False    # 防御性默认值：避免首次渲染前属性未初始化
         self._pending_protect = {}   # 盘符 -> True(待生效保护)/False(待取消)
         # 实时写入监控状态
         self.monitor = overlay_monitor.OverlayMonitor()
@@ -431,6 +433,15 @@ class UWFApp:
         my_gen = getattr(self, gen_attr) + 1
         setattr(self, gen_attr, my_gen)
 
+        def _call_fail(cb, msg, supported):
+            """错误回调兼容：部分回调只接收 1 个参数。
+            历史上 _run_com 一直传 2 个参数，导致 21 处 `def fail(m)` 抛
+            TypeError 被静默吞掉 —— 失败提示永远弹不出来。此处统一兜底。"""
+            try:
+                cb(msg, supported)
+            except TypeError:
+                cb(msg)
+
         def work():
             pythoncom.CoInitialize()
             try:
@@ -441,11 +452,11 @@ class UWFApp:
             except uwf_core.UWFNotSupported as e:
                 cur = getattr(self, gen_attr)
                 if my_gen == cur:
-                    self.root.after(0, lambda: on_fail(str(e), False))
+                    self.root.after(0, lambda: _call_fail(on_fail, str(e), False))
             except Exception as e:
                 cur = getattr(self, gen_attr)
                 if my_gen == cur:
-                    self.root.after(0, lambda: on_fail(str(e), True))
+                    self.root.after(0, lambda: _call_fail(on_fail, str(e), True))
             finally:
                 pythoncom.CoUninitialize()
 
@@ -453,7 +464,7 @@ class UWFApp:
 
     # ==================== UI 布局 ====================
     def _setup_ui(self):
-        self.root.title("UWF Manager Pro v2.19.1")
+        self.root.title("UWF Manager Pro v2.20")
         self.root.geometry("1100x800")
         self.root.configure(bg=BG)
         self.root.minsize(900, 680)
@@ -474,7 +485,7 @@ class UWFApp:
         title_bar = tk.Frame(self.root, bg=ACCENT, height=48)
         title_bar.pack(fill=tk.X)
         title_bar.pack_propagate(False)
-        tk.Label(title_bar, text="UWF Manager Pro v2.19",
+        tk.Label(title_bar, text="UWF Manager Pro v2.20",
                  font=FONT_TITLE, fg="white", bg=ACCENT).pack(
             side=tk.LEFT, padx=18, pady=8)
         self.lbl_admin = tk.Label(title_bar, text="", font=FONT_BOLD,
@@ -717,6 +728,23 @@ class UWFApp:
                                     values=["基于内存", "基于磁盘"],
                                     state="readonly", width=14)
         self.cb_type.grid(row=r, column=1, sticky="w", padx=4, pady=5)
+        # 选「基于磁盘」时自动弹出磁盘检测/选择对话框
+        self.cb_type.bind("<<ComboboxSelected>>", self._on_overlay_type_changed)
+        self.btn_pick_disk = ttk.Button(
+            grid, text="选择覆盖磁盘…", width=15,
+            command=lambda: self._open_overlay_disk_dialog(auto=False))
+        self.btn_pick_disk.grid(row=r, column=2, sticky="w",
+                                padx=(10, 4), pady=5)
+        r += 1
+
+        # 覆盖文件位置（磁盘模式）
+        tk.Label(grid, text="覆盖文件:", bg=CARD_BG, font=FONT).grid(
+            row=r, column=0, sticky="ne", padx=4, pady=5)
+        self.lbl_swapfile = tk.Label(grid, text="—", bg=CARD_BG, font=FONT,
+                                     fg=TEXT_SUB, justify=tk.LEFT,
+                                     anchor="w")
+        self.lbl_swapfile.grid(row=r, column=1, columnspan=2, sticky="w",
+                               padx=4, pady=5)
         r += 1
 
         # HORM
@@ -741,7 +769,7 @@ class UWFApp:
 
         btn_row = tk.Frame(inner, bg=CARD_BG)
         btn_row.pack(fill=tk.X, pady=(8, 0))
-        self.btn_apply_basic = ttk.Button(btn_row, text="应用基本设置", width=16,
+        self.btn_apply_basic = ttk.Button(btn_row, text="应用", width=16,
                                           command=self.on_apply_basic)
         self.btn_apply_basic.pack(side=tk.LEFT, padx=2)
         self.btn_apply_servicing = ttk.Button(btn_row, text="应用服务模式", width=16,
@@ -773,15 +801,32 @@ class UWFApp:
         r += 1
 
         # 可用空间（只读显示）
+        tk.Label(grid, text="可用空间:", bg=CARD_BG, font=FONT).grid(
+            row=r, column=0, sticky="e", padx=4, pady=5)
         self.lbl_avail_space = tk.Label(grid, text="", font=FONT,
-                                        fg=ACCENT, bg=CARD_BG)
+                                        fg=ACCENT, bg=CARD_BG, anchor="w",
+                                        justify=tk.LEFT)
         self.lbl_avail_space.grid(row=r, column=1, sticky="w", padx=4, pady=5)
+        r += 1
+
+        tk.Label(grid, justify=tk.LEFT, anchor="w", bg=CARD_BG,
+                 font=("Segoe UI", 8), fg=TEXT_SUB,
+                 text=("· 最大缓存：写入「下次会话」，重启后生效。\n"
+                       "· 警告/严重阈值：仅对运行中的当前会话生效，\n"
+                       "  UWF 未启用时设置不会保存，请启用后重启再设。\n"
+                       "· 磁盘模式：请在对应盘预留 ≥ 覆盖大小 2 倍的空闲空间。")
+                 ).grid(row=r, column=0, columnspan=3, sticky="w",
+                        padx=4, pady=(2, 0))
+        r += 1
 
         btn_row = tk.Frame(inner, bg=CARD_BG)
         btn_row.pack(fill=tk.X, pady=(8, 0))
-        self.btn_apply_cache = ttk.Button(btn_row, text="确认缓存", width=14,
+        self.btn_apply_cache = ttk.Button(btn_row, text="应用", width=14,
                                           command=self.on_apply_cache)
         self.btn_apply_cache.pack(side=tk.LEFT, padx=2)
+        ttk.Button(btn_row, text="应用并回读校验", width=16,
+                   command=lambda: self.on_apply_cache(verify=True)
+                   ).pack(side=tk.LEFT, padx=2)
 
         # ===== 右侧：分区保护设置 =====
         right_col = tk.Frame(content, bg=BG)
@@ -1020,6 +1065,7 @@ class UWFApp:
 
         # --- 状态 ---
         enabled = flt.get("CurrentEnabled")
+        self.ufw_enabled = bool(enabled)   # 用真实过滤数据同步启用状态
         if enabled:
             self.lbl_status.config(text="已启用", fg=GREEN)
             self.btn_toggle.config(text="关闭保护")
@@ -1068,16 +1114,26 @@ class UWFApp:
                 text=f"已用 {pct:.1f}%  |  可用 {avail_mb:.0f} MB{alert}")
             # 同步更新设置面板的可用空间
             if hasattr(self, 'lbl_avail_space'):
-                self.lbl_avail_space.config(
-                    text=f"可用空间: {avail_mb:.0f} MB")
+                if self.ufw_enabled:
+                    self.lbl_avail_space.config(
+                        text=f"{avail_mb:.0f} MB", fg=ACCENT)
+                else:
+                    self.lbl_avail_space.config(
+                        text="——（UWF 未启用，覆盖层未运行；此值仅 UWF "
+                             "运行时有效）", fg=TEXT_SUB)
             # 托盘显示剩余内存
             self._update_tray(flt, overlay, cfg)
         elif cfg.get("MaximumSize"):
             self.lbl_overlay.config(text=f"上限 {cfg['MaximumSize']} MB")
             self.lbl_overlay_detail.config(text="（无实时用量数据）")
+            if hasattr(self, 'lbl_avail_space'):
+                self.lbl_avail_space.config(
+                    text="——（UWF 未启用，无实时用量）", fg=TEXT_SUB)
         else:
             self.lbl_overlay.config(text="—")
             self.lbl_overlay_detail.config(text="")
+            if hasattr(self, 'lbl_avail_space'):
+                self.lbl_avail_space.config(text="——", fg=TEXT_SUB)
 
         # --- 卷列表 ---
         for i in self.tree_vol.get_children():
@@ -1578,6 +1634,8 @@ class UWFApp:
                 self.ent_crit.insert(0, str(int(crit_val)))
         # --- UWF 状态联动：UWF 启用时设置不可编辑（灰色只读）---
         self._apply_settings_lock(self.ufw_enabled)
+        # 覆盖文件位置
+        self._update_swapfile_label()
 
     def _apply_settings_lock(self, uwf_enabled):
         """UWF 启用时，基本设置与缓存设置全部锁定为灰色只读；
@@ -1596,7 +1654,10 @@ class UWFApp:
                 w.configure(state=estate)
             except Exception:
                 pass
-        for w in (self.btn_apply_basic, self.btn_apply_cache):
+        for w in (self.btn_apply_basic, self.btn_apply_cache,
+                  getattr(self, "btn_pick_disk", None)):
+            if w is None:
+                continue
             try:
                 w.configure(state=bstate)
             except Exception:
@@ -1932,6 +1993,204 @@ class UWFApp:
 
         self._run_com("status_gen", op, done, fail)
 
+    # ==================== 覆盖文件磁盘选择（磁盘模式）====================
+    def _on_overlay_type_changed(self, event=None):
+        """覆盖类型下拉变化：选了「基于磁盘」就自动弹出磁盘检测/选择框。"""
+        if self.var_ovl_type.get() == "基于磁盘":
+            self._open_overlay_disk_dialog(auto=True)
+
+    def _update_swapfile_label(self):
+        """刷新「覆盖文件」标签，显示各盘根目录已有的 uwfswap.sys。"""
+        if not hasattr(self, "lbl_swapfile"):
+            return
+        try:
+            found = uwf_core.find_overlay_files()
+        except Exception:
+            found = {}
+        if not found:
+            self.lbl_swapfile.config(
+                text="尚未创建（点「选择覆盖磁盘…」或应用后生成）", fg=TEXT_SUB)
+            return
+        lines = [f"{d}\\{uwf_core.OVERLAY_FILE_NAME}   约 {mb:,.0f} MB"
+                 for d, mb in sorted(found.items())]
+        self.lbl_swapfile.config(text="\n".join(lines), fg=TEXT)
+
+    def _open_overlay_disk_dialog(self, auto=False):
+        """检测本机所有磁盘/卷，让用户选择「磁盘模式」覆盖文件放哪个盘。
+
+        走官方 `uwfmgr volume create-swapfile <卷>`，因此是真实生效的操作。
+        """
+        if getattr(self, "ufw_enabled", False):
+            messagebox.showwarning(
+                "不可修改",
+                "UWF 当前为启用状态，无法更换覆盖磁盘。\n"
+                "请先在「状态概览」中关闭写入过滤并重启，再来设置。")
+            if auto:
+                self.var_ovl_type.set("基于内存")
+            return
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title("选择覆盖文件存放磁盘（磁盘模式）")
+        dlg.configure(bg=BG)
+        dlg.transient(self.root)
+        dlg.grab_set()
+        dlg.resizable(False, False)
+
+        head = tk.Frame(dlg, bg=CARD_BG)
+        head.pack(fill=tk.X, padx=10, pady=(10, 6))
+        tk.Label(head, text="检测到的磁盘 / 卷", bg=CARD_BG, font=FONT_BOLD,
+                 fg=TEXT).pack(anchor="w", padx=8, pady=(6, 2))
+        tk.Label(head, justify=tk.LEFT, bg=CARD_BG, font=FONT, fg=TEXT_SUB,
+                 text=("UWF 磁盘模式的覆盖文件（uwfswap.sys）可以放在任意卷上，\n"
+                       "由官方命令 uwfmgr volume create-swapfile 指定。\n"
+                       "· 选中的卷即成为「覆盖文件所在盘」，重启后生效。\n"
+                       "· 建议该盘可用空间 ≥ 覆盖大小 × 2，否则可能写满出错。\n"
+                       "· 覆盖文件会按覆盖大小预分配，长期占用该盘空间；\n"
+                       "  选小容量盘（如 16GB 傲腾）请把「最大缓存」调小。")
+                 ).pack(anchor="w", padx=8, pady=(0, 6))
+
+        cols = ("盘符", "卷标", "磁盘型号", "类型", "总线", "总容量", "可用空间", "覆盖文件")
+        tv = ttk.Treeview(dlg, columns=cols, show="headings", height=7)
+        widths = {"盘符": 52, "卷标": 64, "磁盘型号": 190, "类型": 92,
+                  "总线": 58, "总容量": 74, "可用空间": 80, "覆盖文件": 104}
+        for c in cols:
+            tv.heading(c, text=c)
+            tv.column(c, width=widths[c], anchor="center")
+        tv.pack(fill=tk.X, padx=10)
+
+        tip = tk.Label(dlg, text="正在检测磁盘…", bg=BG, font=FONT,
+                       fg=TEXT_SUB, justify=tk.LEFT, anchor="w", wraplength=760)
+        tip.pack(anchor="w", padx=12, pady=(8, 0))
+
+        btns = tk.Frame(dlg, bg=BG)
+        btns.pack(fill=tk.X, padx=10, pady=10)
+        state = {"rows": []}
+
+        def _cur_max_size():
+            try:
+                return int(self.ent_max_size.get())
+            except Exception:
+                return 0
+
+        def on_sel(_evt=None):
+            sel = tv.selection()
+            if not sel:
+                return
+            it = state["rows"][tv.index(sel[0])]
+            max_sz = _cur_max_size()
+            need_gb = (max_sz * 2) / 1024.0
+            free_gb = it.get("free_gb", 0.0)
+            txt = (f"将把覆盖文件创建到  {it['letter']}\\"
+                   f"{uwf_core.OVERLAY_FILE_NAME}\n"
+                   f"该盘可用 {free_gb:.1f} GB")
+            if max_sz:
+                txt += f"，覆盖大小 {max_sz} MB，建议预留 {need_gb:.1f} GB"
+            if max_sz and free_gb < need_gb:
+                tip.config(text="⚠ 空间偏紧：" + txt +
+                                "\n建议先把「最大缓存」调小，或换一个盘。", fg=RED)
+            else:
+                tip.config(text="✓ " + txt, fg=GREEN)
+
+        tv.bind("<<TreeviewSelect>>", on_sel)
+
+        def do_ok():
+            sel = tv.selection()
+            if not sel:
+                messagebox.showwarning("未选择", "请先选中一个盘。", parent=dlg)
+                return
+            it = state["rows"][tv.index(sel[0])]
+            letter = it["letter"]
+            max_sz = _cur_max_size()
+            if not messagebox.askyesno(
+                    "确认更换覆盖磁盘",
+                    f"将把覆盖文件（uwfswap.sys）创建到：\n\n"
+                    f"    {letter}\\{uwf_core.OVERLAY_FILE_NAME}\n\n"
+                    f"覆盖类型：基于磁盘（会一并设置）\n"
+                    f"覆盖大小：{max_sz} MB\n"
+                    f"该盘可用：{it.get('free_gb', 0):.1f} GB\n\n"
+                    f"注意：\n"
+                    f"· 重启后生效。\n"
+                    f"· 其它盘上遗留的 uwfswap.sys 不会自动删除，\n"
+                    f"  需手动删除才能回收那部分空间。\n\n确定应用吗？",
+                    parent=dlg):
+                return
+
+            def op():
+                c = uwf_core.UWFCore()
+                c.connect()
+                c.create_swapfile(letter)
+                cfg = c.get_overlay_config()
+                t = cfg.get("Type")
+                kind = {0: "基于内存", 1: "基于磁盘"}.get(t, "?")
+                found = c.get_overlay_file_locations()
+                loc = "\n".join(f"    {k}\\{uwf_core.OVERLAY_FILE_NAME}"
+                                f"  约 {v:,.0f} MB"
+                                for k, v in sorted(found.items())) or "    （重启后生成）"
+                return (f"覆盖类型：{kind}\n"
+                        f"覆盖大小：{cfg.get('MaximumSize')} MB\n"
+                        f"覆盖文件位置：\n{loc}\n\n重启后生效。")
+
+            def done(msg):
+                try:
+                    dlg.destroy()
+                except Exception:
+                    pass
+                self.var_ovl_type.set("基于磁盘")
+                messagebox.showinfo("已应用", msg)
+                self._update_swapfile_label()
+                self.refresh()
+
+            def fail(m, _supported=True):
+                messagebox.showerror("失败", m, parent=dlg)
+
+            self._run_com("disk_gen", op, done, fail)
+
+        ttk.Button(btns, text="确定并应用", width=14,
+                   command=do_ok).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btns, text="取消", width=10,
+                   command=dlg.destroy).pack(side=tk.LEFT, padx=2)
+
+        def loaded(rows):
+            state["rows"] = rows
+            for i in tv.get_children():
+                tv.delete(i)
+            for it in rows:
+                swap_mb = it.get("swap_mb") or 0
+                mark = "★ " if it.get("is_optane") else ""
+                tv.insert("", tk.END, values=(
+                    it["letter"], it.get("label") or "—",
+                    mark + (it.get("model") or "未知"),
+                    it.get("media") or "未知", it.get("bus") or "未知",
+                    f"{it.get('size_gb', 0):.1f} GB",
+                    f"{it.get('free_gb', 0):.1f} GB",
+                    f"{swap_mb:,.0f} MB" if swap_mb else "—"))
+            kids = tv.get_children()
+            if not rows:
+                tip.config(text="未检测到任何固定磁盘。", fg=RED)
+                return
+            # 默认选中：已有覆盖文件的盘 > 傲腾盘 > 可用空间最大
+            pick = None
+            for k, it in enumerate(rows):
+                if it.get("swap_mb"):
+                    pick = k
+                    break
+            if pick is None:
+                for k, it in enumerate(rows):
+                    if it.get("is_optane"):
+                        pick = k
+                        break
+            if pick is None:
+                pick = max(range(len(rows)),
+                           key=lambda k: rows[k].get("free_gb", 0))
+            tv.selection_set(kids[pick])
+            tv.focus(kids[pick])
+            on_sel()
+
+        def load_fail(m, _supported=True):
+            tip.config(text=f"磁盘检测失败：{m}", fg=RED)
+
+        self._run_com("disk_gen", uwf_core.list_storage, loaded, load_fail)
+
     # ==================== 操作：应用基本设置 ====================
     def on_apply_basic(self):
         if getattr(self, "ufw_enabled", False):
@@ -1965,20 +2224,38 @@ class UWFApp:
             elif horm_val == "禁用":
                 c.disable_horm()
                 results.append("HORM → 禁用")
+            # 回读校验
+            cfg = c.get_overlay_config()
+            t = cfg.get("Type")
+            results.append("回读：覆盖类型 = "
+                           + {0: "基于内存", 1: "基于磁盘"}.get(t, "未知")
+                           + f"，最大缓存 = {cfg.get('MaximumSize')} MB")
             return "\n".join(results)
 
         def done(msg):
-            messagebox.showinfo("设置已应用",
-                                f"{msg}\n\n重启后生效。")
+            self._update_swapfile_label()
+            messagebox.showinfo("设置已应用", f"{msg}\n\n重启后生效。")
+            # 磁盘模式且尚未分配覆盖文件 → 立即引导选盘
+            if type_val == "基于磁盘":
+                try:
+                    found = uwf_core.find_overlay_files()
+                except Exception:
+                    found = {}
+                if not found:
+                    if messagebox.askyesno(
+                            "选择覆盖文件所在磁盘",
+                            "已切换为「基于磁盘」，但还没有指定覆盖文件放在哪个盘。\n"
+                            "现在去检测磁盘并选择吗？"):
+                        self._open_overlay_disk_dialog(auto=False)
             self.refresh()
 
-        def fail(m):
+        def fail(m, _supported=True):
             messagebox.showerror("失败", m)
 
         self._run_com("status_gen", op, done, fail)
 
     # ==================== 操作：应用缓存设置 ====================
-    def on_apply_cache(self):
+    def on_apply_cache(self, verify=False):
         if getattr(self, "ufw_enabled", False):
             messagebox.showwarning("不可编辑",
                 "UWF 当前为启用状态，缓存设置需先禁用 UWF 才能修改。\n"
@@ -1991,20 +2268,58 @@ class UWFApp:
         except ValueError:
             messagebox.showerror("参数错误", "三个阈值都必须是整数。")
             return
+        if max_sz < 1024 and not messagebox.askyesno(
+                "数值偏小",
+                f"最大缓存 {max_sz} MB 小于 UWF 建议最小值 1024 MB。\n"
+                f"仍要提交吗？"):
+            return
 
         def op():
             c = uwf_core.UWFCore()
             c.connect()
+            lines = []
+            # 1) 最大缓存 —— 写入「下次会话」，重启后生效
             c.set_maximum_size(max_sz)
-            c.set_warning_threshold(warn)
-            c.set_critical_threshold(crit)
-            return f"最大缓存={max_sz}MB  警告={warn}MB  严重={crit}MB"
+            cfg = c.get_overlay_config()
+            lines.append(f"[成功] 最大缓存 -> {cfg.get('MaximumSize')} MB"
+                         f"（下次会话，重启后生效）")
+            # 2) 警告/严重阈值 —— 仅对运行中的当前会话生效，逐项反馈成败
+            for name, fn, val in (("警告阈值", c.set_warning_threshold, warn),
+                                  ("严重阈值", c.set_critical_threshold, crit)):
+                try:
+                    fn(val)
+                    lines.append(f"[成功] {name} -> {val} MB")
+                except Exception as e:
+                    msg = str(e).split("]:")[-1].strip() or str(e)
+                    lines.append(f"[失败] {name} -> {val} MB：{msg}")
+            # 3) 磁盘模式：报告覆盖文件位置与空间余量
+            if cfg.get("Type") == 1:
+                try:
+                    rows = [r for r in uwf_core.list_storage()
+                            if r.get("swap_mb")]
+                except Exception:
+                    rows = []
+                if rows:
+                    need_gb = max_sz * 2 / 1024.0
+                    for r in rows:
+                        free = r.get("free_gb", 0.0)
+                        tail = ("（充足）" if free >= need_gb
+                                else f"（偏紧，建议 >= {need_gb:.1f} GB）")
+                        lines.append(
+                            f"[信息] 覆盖文件位于 {r['letter']}"
+                            f"（{r['media']}）：{r['swap_mb']:,.0f} MB，"
+                            f"该盘可用 {free:.1f} GB {tail}")
+                else:
+                    lines.append("[信息] 磁盘模式尚未指定覆盖文件所在盘，"
+                                 "请点「选择覆盖磁盘…」")
+            return "\n".join(lines)
 
         def done(msg):
+            self._update_swapfile_label()
             messagebox.showinfo("缓存设置已保存", msg)
             self.refresh()
 
-        def fail(m):
+        def fail(m, _supported=True):
             messagebox.showerror("失败", m)
 
         self._run_com("status_gen", op, done, fail)

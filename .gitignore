@@ -25,3 +25,10 @@ Desktop.ini
 # ---- Secrets (never commit) ----
 *.token
 .env
+
+# ---- Build installer / temp (not source) ----
+py313.exe
+py313_install.log
+_dbg.spec
+dist/_dbg_UWF.exe
+dbg_storage.py
