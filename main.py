@@ -1,5 +1,5 @@
 """
-UWF Manager Pro v2.22 - 主程序（tkinter UI）
+UWF Manager Pro v2.23 - 主程序（tkinter UI）
 功能：
   1. 状态面板：启用/禁用/HORM/关机待处理
   2. 覆盖层内存监控（已用/总容量/阈值变色）← 修复数据显示
@@ -184,8 +184,20 @@ class SystemTrayIcon:
                     nid = (self.hwnd, 0, win32gui.NIF_ICON,
                            self.WM_TRAY, self.hicon, "")
                     win32gui.Shell_NotifyIcon(win32gui.NIM_MODIFY, nid)
-        except Exception:
-            pass
+        except Exception as e:
+            # 不再静默失败：v2.20~v2.23 因打包环境漏装 Pillow，图标渲染全部失败
+            # 却没有任何提示，导致托盘百分比数字"消失"却查不到原因。
+            self.last_icon_error = f"{type(e).__name__}: {e}"
+            try:
+                import traceback
+                log = os.path.join(
+                    os.path.dirname(sys.executable) if getattr(
+                        sys, "frozen", False) else os.getcwd(),
+                    "uwf_tray_error.log")
+                with open(log, "a", encoding="utf-8") as f:
+                    f.write(traceback.format_exc() + "\n")
+            except Exception:
+                pass
 
     def _create_hicon_from_text(self, text, warn=False):
         """用 PIL 生成 .ico 文件 → LoadImageW 从文件加载 HICON（最可靠的 Windows 图标加载方式）。
@@ -464,7 +476,7 @@ class UWFApp:
 
     # ==================== UI 布局 ====================
     def _setup_ui(self):
-        self.root.title("UWF Manager Pro v2.22")
+        self.root.title("UWF Manager Pro v2.23")
         self.root.geometry("1100x800")
         self.root.configure(bg=BG)
         self.root.minsize(900, 680)
@@ -485,7 +497,7 @@ class UWFApp:
         title_bar = tk.Frame(self.root, bg=ACCENT, height=48)
         title_bar.pack(fill=tk.X)
         title_bar.pack_propagate(False)
-        tk.Label(title_bar, text="UWF Manager Pro v2.22",
+        tk.Label(title_bar, text="UWF Manager Pro v2.23",
                  font=FONT_TITLE, fg="white", bg=ACCENT).pack(
             side=tk.LEFT, padx=18, pady=8)
         self.lbl_admin = tk.Label(title_bar, text="", font=FONT_BOLD,
@@ -588,6 +600,12 @@ class UWFApp:
         self.lbl_mode = tk.Label(row, text="", font=FONT, fg=TEXT_SUB,
                                  bg=CARD_BG)
         self.lbl_mode.pack(side=tk.LEFT, padx=20)
+
+        # --- 覆盖模式（磁盘模式 / 内存模式）---
+        self.lbl_ovl_mode = tk.Label(inner, text="", font=FONT_BOLD,
+                                     fg=ACCENT, bg=CARD_BG, anchor="w",
+                                     justify=tk.LEFT)
+        self.lbl_ovl_mode.pack(fill=tk.X, pady=(6, 0))
 
         btn_row = tk.Frame(inner, bg=CARD_BG)
         btn_row.pack(fill=tk.X, pady=(8, 0))
@@ -1043,6 +1061,62 @@ class UWFApp:
             self.lbl_msg.config(
                 text="10 秒内未收到数据。请确认以管理员运行后点击「刷新」。")
 
+    def _set_status_text(self, flt):
+        """统一设置「已启用 / 已禁用 / 待重启生效」状态文字与按钮文案。
+
+        UWF 的 enable/disable 只改 NextEnabled（下次启动生效），当次会话的
+        CurrentEnabled 不变。旧版只看 CurrentEnabled，导致用户刚点完「启用」
+        仍看到「已禁用」，误以为设置失败。
+        """
+        enabled = bool(flt.get("CurrentEnabled"))
+        next_en = flt.get("NextEnabled")
+        if enabled and next_en:
+            txt, color, btn = "已启用", GREEN, "关闭保护"
+        elif enabled and not next_en:
+            txt, color, btn = "运行中（重启后关闭）", "#B8860B", "关闭保护"
+        elif not enabled and next_en:
+            txt, color, btn = "待重启生效", "#B8860B", "关闭保护"
+        else:
+            txt, color, btn = "已禁用", RED, "开启保护"
+        try:
+            self.lbl_status.config(text=txt, fg=color)
+            self.btn_toggle.config(text=btn)
+        except Exception:
+            pass
+
+    def _update_overlay_mode_label(self, cfg=None):
+        """显示当前覆盖模式：磁盘模式（含覆盖文件所在盘）/ 内存模式。"""
+        if not cfg:
+            try:
+                c = uwf_core.UWFCore()
+                c.connect()
+                cfg = c.get_overlay_config()
+            except Exception:
+                cfg = {}
+        cfg = cfg or {}
+        t = cfg.get("Type")
+        max_sz = cfg.get("MaximumSize")
+        if t == 1:
+            try:
+                files = uwf_core.find_overlay_files()
+            except Exception:
+                files = {}
+            if files:
+                where = "、".join(f"{d} {mb:,.0f} MB" for d, mb in files.items())
+                txt = f"💽 磁盘模式　覆盖文件：{where}"
+            else:
+                txt = ("💽 磁盘模式　⚠ 尚未指定覆盖文件所在盘，"
+                       "请在「设置」中点「选择覆盖磁盘…」")
+        elif t == 0:
+            txt = (f"🧠 内存模式（RAM 上限 {max_sz} MB）" if max_sz
+                   else "🧠 内存模式")
+        else:
+            txt = ""
+        try:
+            self.lbl_ovl_mode.config(text=txt)
+        except Exception:
+            pass
+
     def _render_status(self, data, is_error=False, msg=""):
         self._rendered = True
 
@@ -1096,12 +1170,8 @@ class UWFApp:
         # --- 状态 ---
         enabled = flt.get("CurrentEnabled")
         self.ufw_enabled = bool(enabled)   # 用真实过滤数据同步启用状态
-        if enabled:
-            self.lbl_status.config(text="已启用", fg=GREEN)
-            self.btn_toggle.config(text="关闭保护")
-        else:
-            self.lbl_status.config(text="已禁用", fg=RED)
-            self.btn_toggle.config(text="开启保护")
+        self._set_status_text(flt)
+        self._update_overlay_mode_label(cfg)
         next_en = flt.get("NextEnabled")
         next_s = "启用" if next_en else "禁用" if next_en is not None else "?"
         self.lbl_mode.config(
@@ -1698,9 +1768,15 @@ class UWFApp:
         """将数据填入设置面板控件。"""
         # 记录当前 UWF 启用状态（用于联动锁定）
         self.ufw_enabled = bool(flt.get("CurrentEnabled", False))
-        # 写入过滤
-        if flt.get("CurrentEnabled") is not None:
-            self.var_filter.set("启用" if flt["CurrentEnabled"] else "禁用")
+        # 写入过滤：以「下次启动」(NextEnabled) 状态回填。
+        # enable/disable 改的是 NextEnabled（下次启动才生效），若用 CurrentEnabled
+        # 回填，刚点完「启用」就会被覆盖回「禁用」，用户再点一次「应用」反而会
+        # 真的执行 disable —— 这正是"开了以后自动跳禁用、重启还是禁用"的根因。
+        ne = flt.get("NextEnabled")
+        ce = flt.get("CurrentEnabled")
+        base = ne if ne is not None else ce
+        if base is not None:
+            self.var_filter.set("启用" if base else "禁用")
         # 覆盖类型
         ovl_type = cfg.get("Type")
         if ovl_type is not None:
@@ -1866,13 +1942,8 @@ class UWFApp:
                 text="版本不支持" if avail.get("state") == "unsupported"
                 else "功能未安装", fg=RED)
             return
-        enabled = flt.get("CurrentEnabled")
-        if enabled:
-            self.lbl_status.config(text="已启用", fg=GREEN)
-            self.btn_toggle.config(text="关闭保护")
-        else:
-            self.lbl_status.config(text="已禁用", fg=RED)
-            self.btn_toggle.config(text="开启保护")
+        self._set_status_text(flt)
+        self._update_overlay_mode_label(cfg)
         next_en = flt.get("NextEnabled")
         next_s = "启用" if next_en else "禁用" if next_en is not None else "?"
         self.lbl_mode.config(

@@ -33,7 +33,7 @@ class UWFNotSupported(Exception):
 
 
 UWFMGR = None  # 延迟解析，绕过 32 位进程 System32 重定向
-UWF_CORE_VERSION = "2.22"
+UWF_CORE_VERSION = "2.23"
 
 
 UWF_FEATURE_NAME = "Client-UnifiedWriteFilter"
